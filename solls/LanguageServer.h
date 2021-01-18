@@ -64,6 +64,7 @@ public:
 	void operator()(lsp::protocol::ShutdownParams const&) override;
 	void operator()(lsp::protocol::DefinitionParams const&) override;
 	void operator()(lsp::protocol::DocumentHighlightParams const&) override;
+	void operator()(lsp::protocol::ReferenceParams const&) override;
 	// TODO more to come :-)
 
 	/// performs a validation run.

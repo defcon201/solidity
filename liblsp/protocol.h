@@ -375,6 +375,14 @@ struct DocumentHighlightReplyParams {
 	std::vector<DocumentHighlight> highlights;
 };
 
+struct ReferenceParams : TextDocumentPositionParams {
+	MessageId requestId;
+};
+
+struct ReferenceReplyParams {
+	std::vector<Location> locations;
+};
+
 // -----------------------------------------------------------------------------------------------
 
 struct DidOpenTextDocumentParams {
@@ -467,6 +475,7 @@ using Request = std::variant<
 	DocumentHighlightParams,
 	InitializeRequest,
 	InitializedNotification,
+	ReferenceParams,
 	InvalidRequest
 	// TODO ...
 >;
@@ -475,6 +484,7 @@ using Response = std::variant<
 	// TODO ...
 	DefinitionReplyParams,
 	DocumentHighlightReplyParams,
+	ReferenceReplyParams,
 	InitializeResult
 >;
 

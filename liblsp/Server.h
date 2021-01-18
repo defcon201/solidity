@@ -55,7 +55,8 @@ public:
 	virtual void operator()(protocol::InvalidRequest const&);
 	virtual void operator()(protocol::ShutdownParams const&) = 0;
 	virtual void operator()(protocol::DefinitionParams const&) {}
-	virtual void operator()(protocol::DocumentHighlightParams const&) {};
+	virtual void operator()(protocol::DocumentHighlightParams const&) {}
+	virtual void operator()(protocol::ReferenceParams const&) {}
 
 	/// Sends a message to the client.
 	///

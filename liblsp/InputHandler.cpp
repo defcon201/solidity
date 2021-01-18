@@ -33,6 +33,7 @@ InputHandler::InputHandler(Logger& _logger):
 		{"textDocument/didClose", bind(&InputHandler::textDocument_didClose, this, _1, _2)},
 		{"textDocument/definition", bind(&InputHandler::textDocument_definition, this, _1, _2)},
 		{"textDocument/documentHighlight", bind(&InputHandler::textDocument_highlight, this, _1, _2)},
+		{"textDocument/references", bind(&InputHandler::textDocument_references, this, _1, _2)},
 	}
 {
 }
@@ -207,6 +208,15 @@ std::optional<protocol::DocumentHighlightParams> InputHandler::textDocument_high
 	params.requestId = _id;
 	loadTextDocumentPosition(params, _json);
 
+	return params;
+}
+
+std::optional<protocol::ReferenceParams> InputHandler::textDocument_references(MessageId const& _id, Json::Value const& _json)
+{
+	auto params = ReferenceParams{};
+	params.requestId = _id;
+	loadTextDocumentPosition(params, _json);
+	fprintf(stderr, "textDocument_references!\n");
 	return params;
 }
 

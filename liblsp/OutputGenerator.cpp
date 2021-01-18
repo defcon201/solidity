@@ -128,6 +128,7 @@ Json::Value OutputGenerator::operator()(protocol::InitializeResult const& _respo
 	reply["capabilities"]["textDocumentSync"]["change"] = static_cast<int>(_response.capabilities.textDocumentSync.change);
 	reply["capabilities"]["definitionProvider"] = _response.capabilities.definitionProvider;
 	reply["capabilities"]["documentHighlightProvider"] = _response.capabilities.documentHighlightProvider;
+	reply["capabilities"]["referencesProvider"] = true;
 
 	return reply;
 }
@@ -177,6 +178,26 @@ Json::Value OutputGenerator::operator()(protocol::DocumentHighlightReplyParams c
 
 		if (highlight.kind != protocol::DocumentHighlightKind::Unspecified)
 			item["kind"] = static_cast<int>(highlight.kind);
+
+		output.append(item);
+	}
+
+	return output;
+}
+
+Json::Value OutputGenerator::operator()(protocol::ReferenceReplyParams const& _params)
+{
+	Json::Value output = Json::arrayValue;
+
+	for (auto const& location: _params.locations)
+	{
+		Json::Value item = Json::objectValue;
+
+		item["range"]["start"]["line"] = location.range.start.line;
+		item["range"]["start"]["character"] = location.range.start.column;
+		item["range"]["end"]["line"] = location.range.end.line;
+		item["range"]["end"]["character"] = location.range.end.column;
+		item["uri"] = location.uri;
 
 		output.append(item);
 	}

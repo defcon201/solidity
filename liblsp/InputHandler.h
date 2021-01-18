@@ -37,6 +37,7 @@ public:
 	std::optional<protocol::DefinitionParams> textDocument_definition(MessageId const&, Json::Value const&);
 
 	std::optional<protocol::DocumentHighlightParams> textDocument_highlight(MessageId const&, Json::Value const&);
+	std::optional<protocol::ReferenceParams> textDocument_references(MessageId const&, Json::Value const&);
 
 private:
 	using Handler = std::function<std::optional<protocol::Request>(MessageId const&, Json::Value const&)>;

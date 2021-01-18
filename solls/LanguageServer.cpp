@@ -433,16 +433,14 @@ optional<lsp::Range> LanguageServer::declarationPosition(frontend::Declaration c
 class ReferenceCollector: public frontend::ASTConstVisitor
 {
 private:
-	frontend::ASTNode const& m_scope;
 	frontend::Declaration const& m_declaration;
 	std::vector<lsp::protocol::DocumentHighlight> m_result;
 
 public:
-	ReferenceCollector(ASTNode const& _scope, frontend::Declaration const& _declaration):
-		m_scope{_scope},
+	explicit ReferenceCollector(frontend::Declaration const& _declaration):
 		m_declaration{_declaration}
 	{
-		fprintf(stderr, "finding decl: %s\n", _declaration.name().c_str());
+		fprintf(stderr, "finding refs: %s\n", _declaration.name().c_str());
 	}
 
 	std::vector<lsp::protocol::DocumentHighlight> take() { return std::move(m_result); }
@@ -510,7 +508,8 @@ std::vector<lsp::protocol::DocumentHighlight> LanguageServer::findAllReferences(
 	if (_declaration)
 	{
 		// XXX the SourceUnit should be the root scope unless we're looking for simple variable identifier.
-		auto collector = ReferenceCollector(_sourceUnit, *_declaration);
+		// XXX if vardecl, use decl's scope
+		auto collector = ReferenceCollector(*_declaration);
 		_sourceUnit.accept(collector);
 		return collector.take();
 	}
@@ -518,10 +517,77 @@ std::vector<lsp::protocol::DocumentHighlight> LanguageServer::findAllReferences(
 	return {};
 }
 
+void LanguageServer::operator()(lsp::protocol::ReferenceParams const& _params)
+{
+	fprintf(stderr, "find all references: %s:%d:%d\n",
+		_params.textDocument.uri.c_str(),
+		_params.position.line,
+		_params.position.column
+	);
+
+	if (auto const file = m_vfs.find(_params.textDocument.uri); file != nullptr)
+	{
+		compile(*file);
+		solAssert(m_compilerStack.get() != nullptr, "");
+
+		auto const sourceName = file->uri().substr(7); // strip "file://"
+
+		if (auto const sourceNode = findASTNode(_params.position, sourceName); sourceNode)
+		{
+			auto output = lsp::protocol::ReferenceReplyParams{};
+			if (auto const sourceIdentifier = dynamic_cast<Identifier const*>(sourceNode); sourceIdentifier != nullptr)
+			{
+				auto const declaration = !sourceIdentifier->annotation().candidateDeclarations.empty()
+					? sourceIdentifier->annotation().candidateDeclarations.front()
+					: sourceIdentifier->annotation().referencedDeclaration;
+
+				auto const sourceName = _params.textDocument.uri.substr(7); // strip "file://"
+				frontend::SourceUnit const& sourceUnit = m_compilerStack->ast(sourceName);
+				std::vector<lsp::protocol::DocumentHighlight> highlights = findAllReferences(declaration, sourceUnit);
+				for (auto const& highlight: highlights)
+				{
+					auto location = lsp::protocol::Location{};
+					location.range = highlight.range;
+					location.uri = _params.textDocument.uri;
+					output.locations.emplace_back(location);
+				}
+			}
+			else if (auto const varDecl = dynamic_cast<VariableDeclaration const*>(sourceNode); varDecl != nullptr)
+			{
+				fprintf(stderr, "AST node is vardecl\n");
+				auto const sourceName = _params.textDocument.uri.substr(7); // strip "file://"
+				frontend::SourceUnit const& sourceUnit = m_compilerStack->ast(sourceName);
+				auto const highlights = findAllReferences(varDecl, sourceUnit);
+				for (auto const& highlight: highlights)
+				{
+					auto location = lsp::protocol::Location{};
+					location.range = highlight.range;
+					location.uri = _params.textDocument.uri;
+					output.locations.emplace_back(location);
+				}
+			}
+			else
+			{
+				fprintf(stderr, "not an identifier\n");
+			}
+			reply(_params.requestId, output);
+		}
+		else
+		{
+			fprintf(stderr, "AST node not found\n");
+			error(_params.requestId, lsp::protocol::ErrorCode::InvalidParams, "Symbol not found.");
+		}
+	}
+	else
+	{
+		// reply(_params.requestId, output);
+		error(_params.requestId, lsp::protocol::ErrorCode::RequestCancelled, "not implemented yet.");
+	}
+	fflush(stderr);
+}
+
 void LanguageServer::operator()(lsp::protocol::DocumentHighlightParams const& _params)
 {
-	auto output = lsp::protocol::DocumentHighlightReplyParams{};
-
 	fprintf(stderr, "DocumentHighlightParams: %s:%d:%d\n",
 		_params.textDocument.uri.c_str(),
 		_params.position.line,
@@ -548,18 +614,18 @@ void LanguageServer::operator()(lsp::protocol::DocumentHighlightParams const& _p
 				frontend::SourceUnit const& sourceUnit = m_compilerStack->ast(sourceName);
 				output.highlights = findAllReferences(declaration, sourceUnit);
 			}
+			else if (auto const varDecl = dynamic_cast<VariableDeclaration const*>(sourceNode); varDecl != nullptr)
+			{
+				fprintf(stderr, "AST node is vardecl\n");
+				auto const sourceName = _params.textDocument.uri.substr(7); // strip "file://"
+				frontend::SourceUnit const& sourceUnit = m_compilerStack->ast(sourceName);
+				output.highlights = findAllReferences(varDecl, sourceUnit);
+			}
 			else
 			{
 				fprintf(stderr, "not an identifier\n");
 			}
 			reply(_params.requestId, output);
-		}
-		else if (auto const varDecl = dynamic_cast<VariableDeclaration const*>(sourceNode); varDecl != nullptr)
-		{
-			fprintf(stderr, "AST node is vardecl\n");
-			auto const sourceName = _params.textDocument.uri.substr(7); // strip "file://"
-			frontend::SourceUnit const& sourceUnit = m_compilerStack->ast(sourceName);
-			output.highlights = findAllReferences(varDecl, sourceUnit);
 		}
 		else
 		{
