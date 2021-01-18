@@ -13,8 +13,6 @@ ReadCallback::Result FileReader::readFile(string const& _kind, string const& _pa
 {
 	try
 	{
-		printf("FileReader.readFile: %s, %s\n", _kind.c_str(), _path.c_str());
-
 		if (_kind != ReadCallback::kindString(ReadCallback::Kind::ReadFile))
 			BOOST_THROW_EXCEPTION(langutil::InternalCompilerError() << util::errinfo_comment(
 				"ReadFile callback used as callback kind " +
@@ -51,7 +49,7 @@ ReadCallback::Result FileReader::readFile(string const& _kind, string const& _pa
 		// NOTE: we ignore the FileNotFound exception as we manually check above
 		auto contents = util::readFileAsString(canonicalPath.string());
 		m_sourceCodes[path.generic_string()] = contents;
-		printf("FileReader.readFile: result path: %s\n", path.generic_string().c_str());
+		m_fullPathMapping[_path] = path.generic_string();
 		return ReadCallback::Result{true, contents};
 	}
 	catch (util::Exception const& _exception)

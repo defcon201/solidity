@@ -15,6 +15,7 @@
 	along with solidity.  If not, see <http://www.gnu.org/licenses/>.
 */
 // SPDX-License-Identifier: GPL-3.0
+#include <boost/algorithm/string/predicate.hpp>
 #include <solls/LanguageServer.h>
 
 #include <liblsp/OutputGenerator.h>
@@ -22,11 +23,14 @@
 
 #include <libsolidity/ast/AST.h>
 #include <libsolidity/ast/ASTVisitor.h>
+#include <libsolidity/interface/ReadFile.h>
 
 #include <liblangutil/SourceReferenceExtractor.h>
 
 #include <libsolutil/Visitor.h>
 #include <libsolutil/JSON.h>
+
+#include <boost/filesystem.hpp>
 
 #include <ostream>
 
@@ -71,6 +75,16 @@ void LanguageServer::operator()(lsp::protocol::InitializeRequest const& _args)
 	msg << "                rootPath          : " << _args.rootPath.value_or("NULL") << endl;
 	for (auto const& workspace: _args.workspaceFolders)
 		msg << "                workspace folder: " << workspace.name << "; " << workspace.uri << endl;
+#endif
+
+	if (boost::starts_with(_args.rootUri.value_or(""), "file:///"))
+	{
+		auto const fspath = boost::filesystem::path(_args.rootUri.value().substr(7));
+		m_basePath = fspath;
+		m_allowedDirectories.push_back(fspath);
+	}
+
+#if !defined(NDEBUG)
 	logMessage(msg.str());
 #endif
 
@@ -157,39 +171,7 @@ void LanguageServer::validate(lsp::vfs::File const& _file)
 
 frontend::ReadCallback::Result LanguageServer::readFile(string const& _kind, string const& _path)
 {
-	using namespace frontend;
-
-	// TODO: do we need this translation?
-	string localPath = _path;
-	if (localPath.find("file://") == 0)
-		localPath.erase(0, 7);
-
-	try
-	{
-		if (_kind != ReadCallback::kindString(ReadCallback::Kind::ReadFile))
-			return ReadCallback::Result{false, "Invalid readFile callback kind " + _kind};
-
-		// TODO: do we want to make use of m_allowedDirectories?
-		// TODO: what iff file does not exist physically on disk? (Web clients? Remix?)
-		// TODO: fix ReadCallback::Result to be be either file contents OR an error of given type (std::variant? solidity::Result?)
-
-		if (auto file = m_vfs.find(_path); file != nullptr)
-		{
-			auto const& contents = file->str();
-			m_sourceCodes[localPath] = contents;
-			return ReadCallback::Result{true, contents};
-		}
-		else if (auto i = m_sourceCodes.find(_path); i != end(m_sourceCodes))
-			return ReadCallback::Result{true, i->second};
-		else
-			return ReadCallback::Result{false, "File not found."};
-
-		return frontend::ReadCallback::Result{}; // TODO
-	}
-	catch (...)
-	{
-		return ReadCallback::Result{false, "Unahdneld exception caught in readFile callback."};
-	}
+	return m_fileReader->readFile(_kind, _path);
 }
 
 constexpr lsp::protocol::DiagnosticSeverity toDiagnosticSeverity(Error::Type _errorType)
@@ -210,65 +192,90 @@ constexpr lsp::protocol::DiagnosticSeverity toDiagnosticSeverity(Error::Type _er
 	return lsp::protocol::DiagnosticSeverity::Error;
 }
 
+void LanguageServer::compile(lsp::vfs::File const& _file)
+{
+	// always start fresh when compiling
+	m_sourceCodes.clear();
+
+	m_sourceCodes[_file.uri().substr(7)] = _file.contentString();
+
+	m_fileReader = make_unique<FileReader>(m_basePath, m_allowedDirectories);
+
+	m_compilerStack.reset();
+	m_compilerStack = make_unique<CompilerStack>(bind(&FileReader::readFile, ref(*m_fileReader), _1, _2));
+
+	// TODO: configure all compiler flags like in CommandLineInterface (TODO: refactor to share logic!)
+	OptimiserSettings settings = OptimiserSettings::standard(); // TODO: get from config
+	m_compilerStack->setOptimiserSettings(settings);
+	m_compilerStack->setParserErrorRecovery(true);
+	m_compilerStack->setEVMVersion(EVMVersion::constantinople()); // TODO: get from config
+	m_compilerStack->setRevertStringBehaviour(RevertStrings::Default); // TODO get from config
+	m_compilerStack->setSources(m_sourceCodes);
+
+	m_compilerStack->compile();
+}
+
 void LanguageServer::validate(lsp::vfs::File const& _file, PublishDiagnosticsList& _result)
 {
-	// TODO
-	//
-	// 0.) [ ] drop old intermediate data structures (such as AST)
-	// 1.) [ ] fully recompile the sources (and collect errors)
-	// 2.) [ ] reconstruct m_diagnostics
-	// 3.) [ ] push diagnostics to the client
+	compile(_file);
 
 	lsp::protocol::PublishDiagnosticsParams params{};
 	params.uri = _file.uri();
 
-	m_sourceCodes.clear();
-	m_sourceCodes[_file.uri().substr(7)] = _file.str();
-
-	m_compilerStack.reset();
-	m_compilerStack = make_unique<CompilerStack>(bind(&LanguageServer::readFile, this, _1, _2));
-	// TODO: configure all compiler flags like in CommandLineInterface (TODO: refactor to share logic!)
-
-	OptimiserSettings settings = OptimiserSettings::standard(); // TODO: or OptimiserSettings::minimal(); // configurable
-	m_compilerStack->setOptimiserSettings(settings);
-	m_compilerStack->setParserErrorRecovery(true);
-	m_compilerStack->setEVMVersion(EVMVersion::constantinople()); // TODO: configurable
-	m_compilerStack->setRevertStringBehaviour(RevertStrings::Default); // TODO configurable
-	m_compilerStack->setSources(m_sourceCodes);
-	m_compilerStack->compile();
-
 	for (shared_ptr<Error const> const& error: m_compilerStack->errors())
 	{
-		auto const message = SourceReferenceExtractor::extract(
-			*error,
-			(error->type() == Error::Type::Warning) ? "Warning" : "Error"
-		);
+		// Don't show this warning. "This is a pre-release compiler version."
+		if (error->errorId().error == 3805)
+			continue;
+
+		auto const message = SourceReferenceExtractor::extract(*error);
 
 		auto const severity = toDiagnosticSeverity(error->type());
 
 		// global warnings don't have positions in the source code - TODO: default them to top of file?
-		auto const position = LineColumn{{
+
+		auto const startPosition = LineColumn{{
 			max(message.primary.position.line, 0),
-			max(message.primary.position.column, 0)
+			max(message.primary.startColumn, 0)
+		}};
+
+		auto const endPosition = LineColumn{{
+			max(message.primary.position.line, 0),
+			max(message.primary.endColumn, 0)
 		}};
 
 		lsp::protocol::Diagnostic diag{};
-
-		diag.range.start.line = position.line;
-		diag.range.start.column = position.column;
-		diag.range.end.line = position.line;
-		diag.range.end.column = position.column + 1;
+		diag.range.start.line = startPosition.line;
+		diag.range.start.column = startPosition.column;
+		diag.range.end.line = endPosition.line;
+		diag.range.end.column = endPosition.column;
 		diag.message = message.primary.message;
 		diag.source = "solc";
 		diag.severity = severity;
-		//diag.code = "42"; // TODO (another PR?)
+
+		for (SourceReference const& secondary: message.secondary)
+		{
+			auto related = lsp::protocol::DiagnosticRelatedInformation{};
+
+			related.message = secondary.message;
+			related.location.uri = "file://" + secondary.sourceName; // is the sourceName always a fully qualified path?
+			related.location.range.start.line = secondary.position.line;
+			related.location.range.start.column = secondary.startColumn;
+			related.location.range.end.line = secondary.position.line; // what about multiline?
+			related.location.range.end.column = secondary.endColumn;
+
+			diag.relatedInformation.emplace_back(move(related));
+		}
+
+		if (message.errorId.has_value())
+			diag.code = to_string(message.errorId.value().error);
 
 		params.diagnostics.emplace_back(move(diag));
 	}
 
 	// some additional analysis (as proof of concept)
 #if 1
-	for (size_t pos = _file.str().find("FIXME", 0); pos != string::npos; pos = _file.str().find("FIXME", pos + 1))
+	for (size_t pos = _file.contentString().find("FIXME", 0); pos != string::npos; pos = _file.contentString().find("FIXME", pos + 1))
 	{
 		lsp::protocol::Diagnostic diag{};
 		diag.message = "Hello, FIXME's should be fixed.";
@@ -279,7 +286,7 @@ void LanguageServer::validate(lsp::vfs::File const& _file, PublishDiagnosticsLis
 		params.diagnostics.emplace_back(diag);
 	}
 
-	for (size_t pos = _file.str().find("TODO", 0); pos != string::npos; pos = _file.str().find("FIXME", pos + 1))
+	for (size_t pos = _file.contentString().find("TODO", 0); pos != string::npos; pos = _file.contentString().find("FIXME", pos + 1))
 	{
 		lsp::protocol::Diagnostic diag{};
 		diag.message = "Please remember to create a ticket on GitHub for that.";
@@ -296,46 +303,133 @@ void LanguageServer::validate(lsp::vfs::File const& _file, PublishDiagnosticsLis
 
 class ASTNodeLocator : public ASTConstVisitor
 {
+private:
+	int m_pos = -1;
+	ASTNode const* m_currentNode = nullptr;
+
 public:
-	ASTNodeLocator(lsp::Position const& _pos)
+	explicit ASTNodeLocator(int _pos): m_pos{_pos}
 	{
-		(void) _pos;
 	}
 
-	bool visit(Identifier const& _node) override
+	ASTNode const* closestMatch() const noexcept { return m_currentNode; }
+
+	bool visitNode(ASTNode const& _node) override
 	{
-		return visitNode(_node);
+		if (_node.location().start <= m_pos && m_pos <= _node.location().end)
+		{
+			m_currentNode = &_node;
+			return true;
+		}
+		return false;
 	}
 };
 
 frontend::ASTNode const* LanguageServer::findASTNode(lsp::Position const& _position, std::string const& _fileName)
 {
-	(void) _position;
-	(void) _fileName;
-
 	if (!m_compilerStack)
 		return nullptr;
 
-	m_compilerStack->ast(_fileName);
 	frontend::ASTNode const& sourceUnit = m_compilerStack->ast(_fileName);
-	ASTNodeLocator m{_position};
-	sourceUnit.accept(m);
+	auto const sourcePos = sourceUnit.location().source->translateLineColumnToPosition(_position.line + 1, _position.column + 1);
 
-	return nullptr;
+	ASTNodeLocator m{sourcePos};
+	sourceUnit.accept(m);
+	auto const closestMatch = m.closestMatch();
+	if (closestMatch != nullptr)
+		fprintf(stderr, "findASTNode for %s @ pos=%d:%d (%d), symbol: '%s' (%s)\n",
+				sourceUnit.location().source->name().c_str(),
+				sourcePos,
+				_position.line,
+				_position.column,
+				closestMatch->location().text().c_str(), typeid(*closestMatch).name());
+	else
+		fprintf(stderr, "findASTNode for pos=%d:%d (%d), not found.\n",
+				sourcePos,
+				_position.line,
+				_position.column);
+
+	return closestMatch;
 }
 
 void LanguageServer::operator()(lsp::protocol::DefinitionParams const& _params)
 {
-	lsp::protocol::DefinitionReplyParams params{};
+	lsp::protocol::DefinitionReplyParams output{};
 
+	output.uri = _params.textDocument.uri;
+	output.range.start.line = _params.position.line + 1;
+	output.range.start.column = _params.position.column + 1;
+	output.range.end = output.range.start;
 
-	params.uri = _params.textDocument.uri;
-	params.range.start.line = _params.position.line + 1;
-	params.range.start.column = _params.position.column + 1;
-	params.range.end.line = _params.position.line + 1;
-	params.range.end.column = _params.position.column + 5;
+	if (auto const file = m_vfs.find(_params.textDocument.uri); file != nullptr)
+	{
+		compile(*file);
+		solAssert(m_compilerStack.get() != nullptr, "");
 
-	reply(_params.requestId, params);
+		auto const sourceName = file->uri().substr(7); // strip "file://"
+
+		if (auto const sourceNode = findASTNode(_params.position, sourceName); sourceNode)
+		{
+			sourceNode->annotation();
+			if (auto const sourceIdentifier = dynamic_cast<Identifier const*>(sourceNode); sourceIdentifier != nullptr)
+			{
+				auto const declaration = !sourceIdentifier->annotation().candidateDeclarations.empty()
+					? sourceIdentifier->annotation().candidateDeclarations.front()
+					: sourceIdentifier->annotation().referencedDeclaration;
+
+				if (auto const loc = declarationPosition(declaration); loc.has_value())
+				{
+					output.range = loc.value();
+					output.uri = "file://" + declaration->location().source->name();
+					reply(_params.requestId, output);
+				}
+				else
+					error(_params.requestId, lsp::protocol::ErrorCode::InvalidParams, "Declaration not found.");
+			}
+			else if (auto const n = dynamic_cast<frontend::MemberAccess const*>(sourceNode); n)
+			{
+				auto const declaration = n->annotation().referencedDeclaration;
+
+				if (auto const loc = declarationPosition(declaration); loc.has_value())
+				{
+					auto const sourceName = declaration->location().source->name();
+					auto const fullSourceName = m_fileReader->fullPathMapping().at(sourceName);
+					output.range = loc.value();
+					output.uri = "file://" + fullSourceName;
+					reply(_params.requestId, output);
+				}
+				else
+					error(_params.requestId, lsp::protocol::ErrorCode::InvalidParams, "Declaration not found.");
+			}
+			else
+			{
+				fprintf(stderr, "identifier: %s\n", typeid(*sourceIdentifier).name());
+				error(_params.requestId, lsp::protocol::ErrorCode::InvalidParams, "Symbol is not an identifier.");
+			}
+		}
+		else
+		{
+			error(_params.requestId, lsp::protocol::ErrorCode::InvalidParams, "Symbol not found.");
+		}
+	}
+	else
+		error(_params.requestId, lsp::protocol::ErrorCode::InvalidRequest, "File not found in VFS.");
+}
+
+optional<lsp::Range> LanguageServer::declarationPosition(frontend::Declaration const* _declaration)
+{
+	if (!_declaration)
+		return nullopt;
+
+	auto const location = _declaration->location();
+
+	auto const [startLine, startColumn] = location.source->translatePositionToLineColumn(location.start);
+	auto const [endLine, endColumn] = location.source->translatePositionToLineColumn(location.end);
+
+	return lsp::Range{
+		lsp::Position{startLine, startColumn},
+		lsp::Position{endLine, endColumn}
+	};
 }
 
 } // namespace solidity

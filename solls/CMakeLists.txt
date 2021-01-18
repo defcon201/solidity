@@ -1,5 +1,6 @@
 add_executable(solls
 	LanguageServer.cpp LanguageServer.h
+	FileReader.cpp FileReader.h
 	main.cpp
 )
 target_link_libraries(solls PRIVATE lsp solidity Boost::boost Boost::program_options)

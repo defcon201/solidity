@@ -67,8 +67,6 @@ public:
 	void log(protocol::MessageType _type, std::string const& _message) override;
 
 protected:
-	[[deprecated]] void sendReply(Json::Value const& _response, std::optional<MessageId> _requestId = std::nullopt);
-
 	Transport& client() noexcept { return m_client; }
 
 private:

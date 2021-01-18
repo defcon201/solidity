@@ -30,7 +30,7 @@ public:
 
 	bool empty() const noexcept { return m_buffer.empty(); }
 	size_t size() const noexcept { return m_buffer.size(); }
-	std::string const& str() const noexcept { return m_buffer; }
+	std::string const& data() const noexcept { return m_buffer; }
 
 	reference at(size_t i) { return m_buffer.at(i); }
 	const_reference at(size_t i) const { return m_buffer.at(i); }
@@ -79,7 +79,7 @@ namespace std
 {
 	inline ostream& operator<<(ostream& _os, lsp::TextBuffer const& _text)
 	{
-		_os << _text.str();
+		_os << _text.data();
 		return _os;
 	}
 }

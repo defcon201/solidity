@@ -65,13 +65,14 @@ int main([[maybe_unused]] int argc, [[maybe_unused]] char* argv[])
 	auto const logPath = "/tmp/solls."s + to_string(getpid());
 	auto debugLogger = DebugLogger(logPath);
 
+
 	int tcpPort = argc == 2 ? atoi(argv[1]) : 0;
 
 	try
 	{
 		unique_ptr<lsp::Transport> transport;
 		if (tcpPort)
-			transport = make_unique<lsp::TcpTransport>(tcpPort, [&](auto msg) { std::cout << msg << '\n'; });
+			transport = make_unique<lsp::TcpTransport>(tcpPort, [&](auto msg) { std::cout << msg << std::endl; });
 		else
 			transport = make_unique<lsp::JSONTransport>(cin, cout, [&](auto msg) { debugLogger(msg); });
 

@@ -17,8 +17,9 @@
 // SPDX-License-Identifier: GPL-3.0
 #pragma once
 
+#include <solls/FileReader.h>
+
 #include <liblsp/Server.h>
-#include <liblsp/protocol.h>
 #include <liblsp/VFS.h>
 #include <liblsp/protocol.h>
 
@@ -27,8 +28,11 @@
 
 #include <json/value.h>
 
+#include <boost/filesystem/path.hpp>
+
 #include <functional>
 #include <map>
+#include <memory>
 #include <optional>
 #include <ostream>
 #include <string>
@@ -48,7 +52,7 @@ public:
 	/// @param _logger special logger used for debugging the LSP.
 	explicit LanguageServer(lsp::Transport& _client, Logger _logger);
 
-	int exec();
+	std::vector<boost::filesystem::path>& allowedDirectories() noexcept { return m_allowedDirectories; }
 
 	// Client-to-Server messages
 	void operator()(lsp::protocol::CancelRequest const&) override;
@@ -71,13 +75,19 @@ public:
 private:
 	frontend::ReadCallback::Result readFile(std::string const&, std::string const&);
 
+	void compile(lsp::vfs::File const& _file);
+
 	frontend::ASTNode const* findASTNode(lsp::Position const& _position, std::string const& _fileName);
+
+	std::optional<lsp::Range> declarationPosition(frontend::Declaration const* _declaration);
 
 private:
 	/// In-memory filesystem for each opened file.
 	///
 	/// Closed files will not be removed as they may be needed for compiling.
 	lsp::vfs::VFS m_vfs;
+
+	std::unique_ptr<FileReader> m_fileReader;
 
 	/// map of input files to source code strings
 	std::map<std::string, std::string> m_sourceCodes;
@@ -86,6 +96,12 @@ private:
 	std::map<std::string /*URI*/, PublishDiagnosticsList> m_diagnostics;
 
 	std::unique_ptr<frontend::CompilerStack> m_compilerStack;
+
+	/// Allowed directories
+	std::vector<boost::filesystem::path> m_allowedDirectories;
+
+	/// Workspace root directory
+	boost::filesystem::path m_basePath;
 };
 
 } // namespace solidity

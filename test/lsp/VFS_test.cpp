@@ -83,7 +83,7 @@ BOOST_AUTO_TEST_CASE(VFS_create)
 	BOOST_CHECK_EQUAL(file->languageId(), "text");
 	BOOST_CHECK_EQUAL(file->version(), 1);
 
-	BOOST_CHECK_EQUAL(file->str(), "Hello, World\n");
+	BOOST_CHECK_EQUAL(file->contentString(), "Hello, World\n");
 }
 
 BOOST_AUTO_TEST_CASE(VFS_modify_erase)
@@ -92,13 +92,13 @@ BOOST_AUTO_TEST_CASE(VFS_modify_erase)
 	vfs::File& file = vfs.insert("file:///project/test.txt", "text", 1, "Hello, World\n");
 	file.modify(Range{{0, 0}, {0, 1}}, "");
 
-	BOOST_CHECK_EQUAL(file.str(), "ello, World\n");
+	BOOST_CHECK_EQUAL(file.contentString(), "ello, World\n");
 
 	file.modify(Range{{0, 4}, {0, 5}}, "");
-	BOOST_CHECK_EQUAL(file.str(), "ello World\n");
+	BOOST_CHECK_EQUAL(file.contentString(), "ello World\n");
 
 	file.modify(Range{{0, 4}, {0, 10}}, "");
-	BOOST_CHECK_EQUAL(file.str(), "ello\n");
+	BOOST_CHECK_EQUAL(file.contentString(), "ello\n");
 }
 
 BOOST_AUTO_TEST_CASE(VFS_modify_erase_multiline)
@@ -107,7 +107,7 @@ BOOST_AUTO_TEST_CASE(VFS_modify_erase_multiline)
 	vfs::File& file = vfs.insert("file:///project/test.txt", "text", 1, "Hello,\nWorld\nCrew\n");
 	file.modify(Range{{0, 1}, {2, 2}}, "");
 
-	BOOST_CHECK_EQUAL(file.str(), "Hew\n");
+	BOOST_CHECK_EQUAL(file.contentString(), "Hew\n");
 }
 
 BOOST_AUTO_TEST_CASE(VFS_modify_change)
@@ -116,7 +116,7 @@ BOOST_AUTO_TEST_CASE(VFS_modify_change)
 	vfs::File& file = vfs.insert("file:///project/test.txt", "text", 1, "Hello, World\n");
 	file.modify(Range{{0, 5}, {0, 6}}, ";");
 
-	BOOST_CHECK_EQUAL(file.str(), "Hello; World\n");
+	BOOST_CHECK_EQUAL(file.contentString(), "Hello; World\n");
 }
 
 BOOST_AUTO_TEST_CASE(VFS_modify_change_single_to_multi_line2)
@@ -126,7 +126,7 @@ BOOST_AUTO_TEST_CASE(VFS_modify_change_single_to_multi_line2)
 	vfs::File& file = vfs.insert("file:///project/test.txt", "text", 1, "Hello\nWorld\n");
 	file.modify(Range{{0, 1}, {0, 2}}, "{foo\nbar}");
 
-	BOOST_CHECK_EQUAL(file.str(), "H{foo\nbar}llo\nWorld\n");
+	BOOST_CHECK_EQUAL(file.contentString(), "H{foo\nbar}llo\nWorld\n");
 }
 
 BOOST_AUTO_TEST_CASE(VFS_modify_change_single_to_multi_line3)
@@ -136,7 +136,7 @@ BOOST_AUTO_TEST_CASE(VFS_modify_change_single_to_multi_line3)
 	vfs::File& file = vfs.insert("file:///project/test.txt", "text", 1, "Hello\nWorld\n");
 	file.modify(Range{{0, 1}, {0, 2}}, "{foo\nbar\ncom}");
 
-	BOOST_CHECK_EQUAL(file.str(), "H{foo\nbar\ncom}llo\nWorld\n");
+	BOOST_CHECK_EQUAL(file.contentString(), "H{foo\nbar\ncom}llo\nWorld\n");
 }
 
 BOOST_AUTO_TEST_CASE(VFS_modify_change_single_to_multi_line3_last_empty)
@@ -146,7 +146,7 @@ BOOST_AUTO_TEST_CASE(VFS_modify_change_single_to_multi_line3_last_empty)
 	vfs::File& file = vfs.insert("file:///project/test.txt", "text", 1, "Hello\nWorld\n");
 	file.modify(Range{{0, 1}, {0, 2}}, "{foo\nbar}\n");
 
-	BOOST_CHECK_EQUAL(file.str(), "H{foo\nbar}\nllo\nWorld\n");
+	BOOST_CHECK_EQUAL(file.contentString(), "H{foo\nbar}\nllo\nWorld\n");
 }
 
 BOOST_AUTO_TEST_CASE(VFS_modify_insert_at_the_beginning)
@@ -154,14 +154,14 @@ BOOST_AUTO_TEST_CASE(VFS_modify_insert_at_the_beginning)
 	TextBuffer text{"Hello, World\n"};
 
 	text.replace(Range{{0, 0}, {0, 0}}, "[");
-	BOOST_CHECK_EQUAL(text.str(), "[Hello, World\n");
+	BOOST_CHECK_EQUAL(text.data(), "[Hello, World\n");
 
 	TextBuffer text2{"Hello,\nWorld\n"};
 	text2.replace(Range{{1, 0}, {1, 0}}, "[");
-	BOOST_CHECK_EQUAL(text2.str(), "Hello,\n[World\n");
+	BOOST_CHECK_EQUAL(text2.data(), "Hello,\n[World\n");
 
 	text2[Range{{2, 0}, {2, 0}}] = "[";
-	BOOST_CHECK_EQUAL(text2.str(), "Hello,\n[World\n[");
+	BOOST_CHECK_EQUAL(text2.data(), "Hello,\n[World\n[");
 }
 
 BOOST_AUTO_TEST_CASE(VFS_modify_insert)
@@ -170,7 +170,7 @@ BOOST_AUTO_TEST_CASE(VFS_modify_insert)
 	vfs::File& file = vfs.insert("file:///project/test.txt", "text", 1, "Hello, World\n");
 	file.modify(Range{{0, 5}, {0, 5}}, ";");
 
-	BOOST_CHECK_EQUAL(file.str(), "Hello;, World\n");
+	BOOST_CHECK_EQUAL(file.contentString(), "Hello;, World\n");
 }
 
 BOOST_AUTO_TEST_SUITE_END()
