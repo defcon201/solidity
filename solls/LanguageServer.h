@@ -81,7 +81,11 @@ private:
 	frontend::ASTNode const* findASTNode(lsp::Position const& _position, std::string const& _fileName);
 
 	std::optional<lsp::Range> declarationPosition(frontend::Declaration const* _declaration);
-	std::vector<lsp::protocol::DocumentHighlight> findAllReferences(frontend::Declaration const* _declaration);
+
+	std::vector<lsp::protocol::DocumentHighlight> findAllReferences(
+		frontend::Declaration const* _declaration,
+		frontend::SourceUnit const& _sourceUnit
+	);
 
 private:
 	/// In-memory filesystem for each opened file.

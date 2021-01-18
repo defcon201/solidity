@@ -156,6 +156,7 @@ Json::Value OutputGenerator::operator()(protocol::DefinitionReplyParams const& _
 	json["range"]["start"]["character"] = _params.range.start.column;
 	json["range"]["end"]["line"] = _params.range.end.line;
 	json["range"]["end"]["character"] = _params.range.end.column;
+
 	json["uri"] = _params.uri;
 
 	return json;
@@ -168,6 +169,7 @@ Json::Value OutputGenerator::operator()(protocol::DocumentHighlightReplyParams c
 	for (auto const& highlight: _params.highlights)
 	{
 		Json::Value item = Json::objectValue;
+
 		item["range"]["start"]["line"] = highlight.range.start.line;
 		item["range"]["start"]["character"] = highlight.range.start.column;
 		item["range"]["end"]["line"] = highlight.range.end.line;

@@ -447,33 +447,50 @@ public:
 
 	std::vector<lsp::protocol::DocumentHighlight> take() { return std::move(m_result); }
 
+	bool visit(FunctionDefinition const& _node) override
+	{
+		if (&_node == &m_declaration)
+			addReference(_node.location());
+
+		return visitNode(_node);
+	}
+
+	bool visit(VariableDeclaration const& _node) override
+	{
+		if (&_node == &m_declaration)
+			addReference(_node.location());
+
+		return visitNode(_node);
+	}
+
 	bool visit(Identifier const& _identifier) override
 	{
 		if (auto const declaration = _identifier.annotation().referencedDeclaration; declaration)
-		{
 			if (declaration == &m_declaration)
-			{
-				auto const& location = _identifier.location();
-				auto const [startLine, startColumn] = location.source->translatePositionToLineColumn(location.start);
-				auto const [endLine, endColumn] = location.source->translatePositionToLineColumn(location.end);
-				auto const locationRange = lsp::Range{
-					lsp::Position{startLine, startColumn},
-					lsp::Position{endLine, endColumn}
-				};
-				fprintf(stderr, " -> found at %d:%d .. %d:%d\n",
-						startLine, startColumn,
-						endLine, endColumn
-				);
+				addReference(_identifier.location());
 
-				auto highlight = lsp::protocol::DocumentHighlight{};
-				highlight.range = locationRange;
-				highlight.kind = lsp::protocol::DocumentHighlightKind::Text; // TODO: are you being read or written to?
-				m_result.emplace_back(highlight);
+		return visitNode(_identifier);
+	}
 
-				return true;
-			}
-		}
-		return true;
+	void addReference(SourceLocation const& _location)
+	{
+		auto const [startLine, startColumn] = _location.source->translatePositionToLineColumn(_location.start);
+		auto const [endLine, endColumn] = _location.source->translatePositionToLineColumn(_location.end);
+		auto const locationRange = lsp::Range{
+			lsp::Position{startLine, startColumn},
+			lsp::Position{endLine, endColumn}
+		};
+
+		fprintf(stderr, " -> found reference at %d:%d .. %d:%d\n",
+			startLine, startColumn,
+			endLine, endColumn
+		);
+
+		auto highlight = lsp::protocol::DocumentHighlight{};
+		highlight.range = locationRange;
+		highlight.kind = lsp::protocol::DocumentHighlightKind::Text; // TODO: are you being read or written to?
+
+		m_result.emplace_back(highlight);
 	}
 
 	// TODO: MemberAccess
@@ -481,21 +498,20 @@ public:
 
 	bool visitNode(ASTNode const& _node) override
 	{
-		(void) _node;
-		(void) m_scope;
-		(void) m_declaration;
+		if (&_node == &m_declaration)
+			addReference(_node.location());
 
 		return true;
 	}
 };
 
-std::vector<lsp::protocol::DocumentHighlight> LanguageServer::findAllReferences(frontend::Declaration const* _declaration)
+std::vector<lsp::protocol::DocumentHighlight> LanguageServer::findAllReferences(frontend::Declaration const* _declaration, SourceUnit const& _sourceUnit)
 {
 	if (_declaration)
 	{
-		auto const scope = _declaration->annotation().contract;
-		auto collector = ReferenceCollector(*scope, *_declaration);
-		scope->accept(collector);
+		// XXX the SourceUnit should be the root scope unless we're looking for simple variable identifier.
+		auto collector = ReferenceCollector(_sourceUnit, *_declaration);
+		_sourceUnit.accept(collector);
 		return collector.take();
 	}
 
@@ -521,31 +537,42 @@ void LanguageServer::operator()(lsp::protocol::DocumentHighlightParams const& _p
 
 		if (auto const sourceNode = findASTNode(_params.position, sourceName); sourceNode)
 		{
+			auto output = lsp::protocol::DocumentHighlightReplyParams{};
 			if (auto const sourceIdentifier = dynamic_cast<Identifier const*>(sourceNode); sourceIdentifier != nullptr)
 			{
 				auto const declaration = !sourceIdentifier->annotation().candidateDeclarations.empty()
 					? sourceIdentifier->annotation().candidateDeclarations.front()
 					: sourceIdentifier->annotation().referencedDeclaration;
 
-				auto output = lsp::protocol::DocumentHighlightReplyParams{};
-				output.highlights = findAllReferences(declaration);
-
-				reply(_params.requestId, output);
+				auto const sourceName = _params.textDocument.uri.substr(7); // strip "file://"
+				frontend::SourceUnit const& sourceUnit = m_compilerStack->ast(sourceName);
+				output.highlights = findAllReferences(declaration, sourceUnit);
 			}
 			else
 			{
-				fprintf(stderr, "identifier: %s\n", typeid(*sourceIdentifier).name());
-				error(_params.requestId, lsp::protocol::ErrorCode::InvalidParams, "Symbol is not an identifier.");
+				fprintf(stderr, "not an identifier\n");
 			}
+			reply(_params.requestId, output);
+		}
+		else if (auto const varDecl = dynamic_cast<VariableDeclaration const*>(sourceNode); varDecl != nullptr)
+		{
+			fprintf(stderr, "AST node is vardecl\n");
+			auto const sourceName = _params.textDocument.uri.substr(7); // strip "file://"
+			frontend::SourceUnit const& sourceUnit = m_compilerStack->ast(sourceName);
+			output.highlights = findAllReferences(varDecl, sourceUnit);
 		}
 		else
 		{
+			fprintf(stderr, "AST node not found\n");
 			error(_params.requestId, lsp::protocol::ErrorCode::InvalidParams, "Symbol not found.");
 		}
 	}
-
-	// reply(_params.requestId, output);
-	error(_params.requestId, lsp::protocol::ErrorCode::RequestCancelled, "not implemented yet.");
+	else
+	{
+		// reply(_params.requestId, output);
+		error(_params.requestId, lsp::protocol::ErrorCode::RequestCancelled, "not implemented yet.");
+	}
+	fflush(stderr);
 }
 
 } // namespace solidity
