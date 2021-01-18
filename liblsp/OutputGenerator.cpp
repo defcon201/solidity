@@ -126,7 +126,8 @@ Json::Value OutputGenerator::operator()(protocol::InitializeResult const& _respo
 	reply["capabilities"]["hoverProvider"] = _response.capabilities.hoverProvider;
 	reply["capabilities"]["textDocumentSync"]["openClose"] = _response.capabilities.textDocumentSync.openClose;
 	reply["capabilities"]["textDocumentSync"]["change"] = static_cast<int>(_response.capabilities.textDocumentSync.change);
-	reply["capabilities"]["definitionProvider"] = static_cast<int>(_response.capabilities.definitionProvider);
+	reply["capabilities"]["definitionProvider"] = _response.capabilities.definitionProvider;
+	reply["capabilities"]["documentHighlightProvider"] = _response.capabilities.documentHighlightProvider;
 
 	return reply;
 }
@@ -158,6 +159,27 @@ Json::Value OutputGenerator::operator()(protocol::DefinitionReplyParams const& _
 	json["uri"] = _params.uri;
 
 	return json;
+}
+
+Json::Value OutputGenerator::operator()(protocol::DocumentHighlightReplyParams const& _params)
+{
+	Json::Value output = Json::arrayValue;
+
+	for (auto const& highlight: _params.highlights)
+	{
+		Json::Value item = Json::objectValue;
+		item["range"]["start"]["line"] = highlight.range.start.line;
+		item["range"]["start"]["character"] = highlight.range.start.column;
+		item["range"]["end"]["line"] = highlight.range.end.line;
+		item["range"]["end"]["character"] = highlight.range.end.column;
+
+		if (highlight.kind != protocol::DocumentHighlightKind::Unspecified)
+			item["kind"] = static_cast<int>(highlight.kind);
+
+		output.append(item);
+	}
+
+	return output;
 }
 
 } // end namespace

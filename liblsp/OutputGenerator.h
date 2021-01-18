@@ -19,6 +19,7 @@ struct OutputGenerator
 	// replies
 	Json::Value operator()(protocol::DefinitionReplyParams const&);
 	Json::Value operator()(protocol::InitializeResult const&);
+	Json::Value operator()(protocol::DocumentHighlightReplyParams const&);
 	Json::Value operator()(protocol::Response const&);
 
 	// methods from server-to-client

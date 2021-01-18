@@ -63,6 +63,7 @@ public:
 	void operator()(lsp::protocol::InitializedNotification const&) override;
 	void operator()(lsp::protocol::ShutdownParams const&) override;
 	void operator()(lsp::protocol::DefinitionParams const&) override;
+	void operator()(lsp::protocol::DocumentHighlightParams const&) override;
 	// TODO more to come :-)
 
 	/// performs a validation run.
@@ -80,6 +81,7 @@ private:
 	frontend::ASTNode const* findASTNode(lsp::Position const& _position, std::string const& _fileName);
 
 	std::optional<lsp::Range> declarationPosition(frontend::Declaration const* _declaration);
+	std::vector<lsp::protocol::DocumentHighlight> findAllReferences(frontend::Declaration const* _declaration);
 
 private:
 	/// In-memory filesystem for each opened file.

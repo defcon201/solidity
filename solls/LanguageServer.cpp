@@ -194,6 +194,8 @@ constexpr lsp::protocol::DiagnosticSeverity toDiagnosticSeverity(Error::Type _er
 
 void LanguageServer::compile(lsp::vfs::File const& _file)
 {
+	// TODO: optimize! do not recompile if nothing has changed (file(s) not flagged dirty).
+
 	// always start fresh when compiling
 	m_sourceCodes.clear();
 
@@ -301,6 +303,7 @@ void LanguageServer::validate(lsp::vfs::File const& _file, PublishDiagnosticsLis
 	_result.emplace_back(params);
 }
 
+// TOOD: maybe use SimpleASTVisitor here, if that would be a simple free-fuunction :)
 class ASTNodeLocator : public ASTConstVisitor
 {
 private:
@@ -356,11 +359,6 @@ void LanguageServer::operator()(lsp::protocol::DefinitionParams const& _params)
 {
 	lsp::protocol::DefinitionReplyParams output{};
 
-	output.uri = _params.textDocument.uri;
-	output.range.start.line = _params.position.line + 1;
-	output.range.start.column = _params.position.column + 1;
-	output.range.end = output.range.start;
-
 	if (auto const file = m_vfs.find(_params.textDocument.uri); file != nullptr)
 	{
 		compile(*file);
@@ -370,7 +368,6 @@ void LanguageServer::operator()(lsp::protocol::DefinitionParams const& _params)
 
 		if (auto const sourceNode = findASTNode(_params.position, sourceName); sourceNode)
 		{
-			sourceNode->annotation();
 			if (auto const sourceIdentifier = dynamic_cast<Identifier const*>(sourceNode); sourceIdentifier != nullptr)
 			{
 				auto const declaration = !sourceIdentifier->annotation().candidateDeclarations.empty()
@@ -430,6 +427,125 @@ optional<lsp::Range> LanguageServer::declarationPosition(frontend::Declaration c
 		lsp::Position{startLine, startColumn},
 		lsp::Position{endLine, endColumn}
 	};
+}
+
+// TOOD: maybe use SimpleASTVisitor here, if that would be a simple free-fuunction :)
+class ReferenceCollector: public frontend::ASTConstVisitor
+{
+private:
+	frontend::ASTNode const& m_scope;
+	frontend::Declaration const& m_declaration;
+	std::vector<lsp::protocol::DocumentHighlight> m_result;
+
+public:
+	ReferenceCollector(ASTNode const& _scope, frontend::Declaration const& _declaration):
+		m_scope{_scope},
+		m_declaration{_declaration}
+	{
+		fprintf(stderr, "finding decl: %s\n", _declaration.name().c_str());
+	}
+
+	std::vector<lsp::protocol::DocumentHighlight> take() { return std::move(m_result); }
+
+	bool visit(Identifier const& _identifier) override
+	{
+		if (auto const declaration = _identifier.annotation().referencedDeclaration; declaration)
+		{
+			if (declaration == &m_declaration)
+			{
+				auto const& location = _identifier.location();
+				auto const [startLine, startColumn] = location.source->translatePositionToLineColumn(location.start);
+				auto const [endLine, endColumn] = location.source->translatePositionToLineColumn(location.end);
+				auto const locationRange = lsp::Range{
+					lsp::Position{startLine, startColumn},
+					lsp::Position{endLine, endColumn}
+				};
+				fprintf(stderr, " -> found at %d:%d .. %d:%d\n",
+						startLine, startColumn,
+						endLine, endColumn
+				);
+
+				auto highlight = lsp::protocol::DocumentHighlight{};
+				highlight.range = locationRange;
+				highlight.kind = lsp::protocol::DocumentHighlightKind::Text; // TODO: are you being read or written to?
+				m_result.emplace_back(highlight);
+
+				return true;
+			}
+		}
+		return true;
+	}
+
+	// TODO: MemberAccess
+	// TODO: function declarations?
+
+	bool visitNode(ASTNode const& _node) override
+	{
+		(void) _node;
+		(void) m_scope;
+		(void) m_declaration;
+
+		return true;
+	}
+};
+
+std::vector<lsp::protocol::DocumentHighlight> LanguageServer::findAllReferences(frontend::Declaration const* _declaration)
+{
+	if (_declaration)
+	{
+		auto const scope = _declaration->annotation().contract;
+		auto collector = ReferenceCollector(*scope, *_declaration);
+		scope->accept(collector);
+		return collector.take();
+	}
+
+	return {};
+}
+
+void LanguageServer::operator()(lsp::protocol::DocumentHighlightParams const& _params)
+{
+	auto output = lsp::protocol::DocumentHighlightReplyParams{};
+
+	fprintf(stderr, "DocumentHighlightParams: %s:%d:%d\n",
+		_params.textDocument.uri.c_str(),
+		_params.position.line,
+		_params.position.column
+	);
+
+	if (auto const file = m_vfs.find(_params.textDocument.uri); file != nullptr)
+	{
+		compile(*file);
+		solAssert(m_compilerStack.get() != nullptr, "");
+
+		auto const sourceName = file->uri().substr(7); // strip "file://"
+
+		if (auto const sourceNode = findASTNode(_params.position, sourceName); sourceNode)
+		{
+			if (auto const sourceIdentifier = dynamic_cast<Identifier const*>(sourceNode); sourceIdentifier != nullptr)
+			{
+				auto const declaration = !sourceIdentifier->annotation().candidateDeclarations.empty()
+					? sourceIdentifier->annotation().candidateDeclarations.front()
+					: sourceIdentifier->annotation().referencedDeclaration;
+
+				auto output = lsp::protocol::DocumentHighlightReplyParams{};
+				output.highlights = findAllReferences(declaration);
+
+				reply(_params.requestId, output);
+			}
+			else
+			{
+				fprintf(stderr, "identifier: %s\n", typeid(*sourceIdentifier).name());
+				error(_params.requestId, lsp::protocol::ErrorCode::InvalidParams, "Symbol is not an identifier.");
+			}
+		}
+		else
+		{
+			error(_params.requestId, lsp::protocol::ErrorCode::InvalidParams, "Symbol not found.");
+		}
+	}
+
+	// reply(_params.requestId, output);
+	error(_params.requestId, lsp::protocol::ErrorCode::RequestCancelled, "not implemented yet.");
 }
 
 } // namespace solidity

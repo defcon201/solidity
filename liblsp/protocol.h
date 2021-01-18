@@ -128,6 +128,7 @@ struct ServerCapabilities {
 	TextDocumentSyncOptions textDocumentSync;
 	bool hoverProvider = false;
 	bool definitionProvider; // ?: boolean | DefinitionOptions;
+	bool documentHighlightProvider = true;
 	// TODO ...
 	WorkspaceCapabilities workspace;
 };
@@ -352,6 +353,28 @@ using TextDocumentContentChangeEvent = std::variant<
 	TextDocumentFullContentChangeEvent
 >;
 
+struct DocumentHighlightParams : TextDocumentPositionParams //, WorkDoneProgressParams, PartialResultParams
+{
+	MessageId requestId;
+};
+
+enum class DocumentHighlightKind {
+	Unspecified,
+	Text,           //!< a textual occurence>
+	Read,           //!< read access to a variable
+	Write,          //!< write access to a variable
+};
+
+struct DocumentHighlight {
+	Range range;
+	DocumentHighlightKind kind;
+};
+
+// response to a DocumentHighlightParams request
+struct DocumentHighlightReplyParams {
+	std::vector<DocumentHighlight> highlights;
+};
+
 // -----------------------------------------------------------------------------------------------
 
 struct DidOpenTextDocumentParams {
@@ -441,6 +464,7 @@ using Request = std::variant<
 	DidChangeTextDocumentParams,
 	DidCloseTextDocumentParams,
 	DidOpenTextDocumentParams,
+	DocumentHighlightParams,
 	InitializeRequest,
 	InitializedNotification,
 	InvalidRequest
@@ -450,6 +474,7 @@ using Request = std::variant<
 using Response = std::variant<
 	// TODO ...
 	DefinitionReplyParams,
+	DocumentHighlightReplyParams,
 	InitializeResult
 >;
 

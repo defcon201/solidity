@@ -9,7 +9,18 @@ using namespace lsp::protocol;
 using namespace std;
 using namespace std::placeholders;
 
-namespace lsp {
+namespace lsp
+{
+
+namespace
+{
+	void loadTextDocumentPosition(protocol::TextDocumentPositionParams& _params, Json::Value const& _json)
+	{
+		_params.textDocument.uri = _json["textDocument"]["uri"].asString();
+		_params.position.line = _json["position"]["line"].asInt();
+		_params.position.column = _json["position"]["character"].asInt();
+	}
+}
 
 InputHandler::InputHandler(Logger& _logger):
 	m_logger{ _logger },
@@ -21,6 +32,7 @@ InputHandler::InputHandler(Logger& _logger):
 		{"textDocument/didChange", bind(&InputHandler::textDocument_didChange, this, _1, _2)},
 		{"textDocument/didClose", bind(&InputHandler::textDocument_didClose, this, _1, _2)},
 		{"textDocument/definition", bind(&InputHandler::textDocument_definition, this, _1, _2)},
+		{"textDocument/documentHighlight", bind(&InputHandler::textDocument_highlight, this, _1, _2)},
 	}
 {
 }
@@ -181,10 +193,20 @@ optional<protocol::DidCloseTextDocumentParams> InputHandler::textDocument_didClo
 std::optional<protocol::DefinitionParams> InputHandler::textDocument_definition(MessageId const& _id, Json::Value const& _json)
 {
 	protocol::DefinitionParams params;
+
 	params.requestId = _id;
-	params.textDocument.uri = _json["textDocument"]["uri"].asString();
-	params.position.line = _json["position"]["line"].asInt();
-	params.position.column = _json["position"]["character"].asInt();
+	loadTextDocumentPosition(params, _json);
+
+	return params;
+}
+
+std::optional<protocol::DocumentHighlightParams> InputHandler::textDocument_highlight(MessageId const& _id, Json::Value const& _json)
+{
+	auto params = protocol::DocumentHighlightParams{};
+
+	params.requestId = _id;
+	loadTextDocumentPosition(params, _json);
+
 	return params;
 }
 
