@@ -42,6 +42,10 @@
 
 namespace solidity {
 
+namespace frontend {
+	class Declaration;
+}
+
 /// Solidity Language Server, managing one LSP client.
 class LanguageServer final: public lsp::Server
 {

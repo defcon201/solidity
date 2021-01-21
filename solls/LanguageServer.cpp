@@ -45,6 +45,101 @@ using namespace solidity::frontend;
 
 namespace solidity {
 
+namespace // {{{ helpers
+{
+
+// TOOD: maybe use SimpleASTVisitor here, if that would be a simple free-fuunction :)
+class ASTNodeLocator : public ASTConstVisitor
+{
+private:
+	int m_pos = -1;
+	ASTNode const* m_currentNode = nullptr;
+
+public:
+	explicit ASTNodeLocator(int _pos): m_pos{_pos}
+	{
+	}
+
+	ASTNode const* closestMatch() const noexcept { return m_currentNode; }
+
+	bool visitNode(ASTNode const& _node) override
+	{
+		if (_node.location().start <= m_pos && m_pos <= _node.location().end)
+		{
+			m_currentNode = &_node;
+			return true;
+		}
+		return false;
+	}
+};
+
+// TOOD: maybe use SimpleASTVisitor here, if that would be a simple free-fuunction :)
+class ReferenceCollector: public frontend::ASTConstVisitor
+{
+private:
+	frontend::Declaration const& m_declaration;
+	std::vector<lsp::protocol::DocumentHighlight> m_result;
+
+public:
+	explicit ReferenceCollector(frontend::Declaration const& _declaration):
+		m_declaration{_declaration}
+	{
+		fprintf(stderr, "finding refs: '%s', '%s'\n",
+				_declaration.name().c_str(),
+				_declaration.location().text().c_str());
+	}
+
+	std::vector<lsp::protocol::DocumentHighlight> take() { return std::move(m_result); }
+
+	bool visit(Identifier const& _identifier) override
+	{
+		if (auto const declaration = _identifier.annotation().referencedDeclaration; declaration)
+			if (declaration == &m_declaration)
+				addReference(_identifier.location(), "(identifier)");
+
+		return visitNode(_identifier);
+	}
+
+	void addReference(SourceLocation const& _location, char const* msg = "")
+	{
+		auto const [startLine, startColumn] = _location.source->translatePositionToLineColumn(_location.start);
+		auto const [endLine, endColumn] = _location.source->translatePositionToLineColumn(_location.end);
+		auto const locationRange = lsp::Range{
+			lsp::Position{startLine, startColumn},
+			lsp::Position{endLine, endColumn}
+		};
+
+		fprintf(stderr, " -> found reference %s at %d:%d .. %d:%d\n",
+			msg,
+			startLine, startColumn,
+			endLine, endColumn
+		);
+
+		auto highlight = lsp::protocol::DocumentHighlight{};
+		highlight.range = locationRange;
+		highlight.kind = lsp::protocol::DocumentHighlightKind::Text; // TODO: are you being read or written to?
+
+		m_result.emplace_back(highlight);
+	}
+
+	// TODO: MemberAccess
+
+	bool visitNode(ASTNode const& _node) override
+	{
+		if (&_node == &m_declaration)
+		{
+			if (auto const* decl = dynamic_cast<Declaration const*>(&_node))
+				addReference(decl->nameLocation(), "(visitNode)");
+			else
+				addReference(_node.location(), "(visitNode)");
+		}
+
+		return true;
+	}
+};
+
+} // }}} end helpers
+
 LanguageServer::LanguageServer(lsp::Transport& _client, Logger _logger):
 	lsp::Server(_client, std::move(_logger)),
 	m_vfs()
@@ -303,31 +398,6 @@ void LanguageServer::validate(lsp::vfs::File const& _file, PublishDiagnosticsLis
 	_result.emplace_back(params);
 }
 
-// TOOD: maybe use SimpleASTVisitor here, if that would be a simple free-fuunction :)
-class ASTNodeLocator : public ASTConstVisitor
-{
-private:
-	int m_pos = -1;
-	ASTNode const* m_currentNode = nullptr;
-
-public:
-	explicit ASTNodeLocator(int _pos): m_pos{_pos}
-	{
-	}
-
-	ASTNode const* closestMatch() const noexcept { return m_currentNode; }
-
-	bool visitNode(ASTNode const& _node) override
-	{
-		if (_node.location().start <= m_pos && m_pos <= _node.location().end)
-		{
-			m_currentNode = &_node;
-			return true;
-		}
-		return false;
-	}
-};
-
 frontend::ASTNode const* LanguageServer::findASTNode(lsp::Position const& _position, std::string const& _fileName)
 {
 	if (!m_compilerStack)
@@ -368,12 +438,21 @@ void LanguageServer::operator()(lsp::protocol::DefinitionParams const& _params)
 
 		if (auto const sourceNode = findASTNode(_params.position, sourceName); sourceNode)
 		{
-			if (auto const sourceIdentifier = dynamic_cast<Identifier const*>(sourceNode); sourceIdentifier != nullptr)
+			if (auto const importDirective = dynamic_cast<ImportDirective const*>(sourceNode))
 			{
-				auto const declaration = !sourceIdentifier->annotation().candidateDeclarations.empty()
-					? sourceIdentifier->annotation().candidateDeclarations.front()
-					: sourceIdentifier->annotation().referencedDeclaration;
-
+				// When cursor is on an import directive, then we want to jump to the actual file that
+				// is being imported.
+				if (auto const fpm = m_fileReader->fullPathMapping().find(importDirective->path()); fpm != m_fileReader->fullPathMapping().end())
+				{
+					output.uri = "file://" + fpm->second;
+					reply(_params.requestId, output);
+				}
+				else
+					error(_params.requestId, lsp::protocol::ErrorCode::InvalidParams, "Declaration not found.");
+			}
+			else if (auto const declaration = dynamic_cast<Declaration const*>(sourceNode))
+			{
+				// For any kind of declaration, jump to the referencing symbol of that declaration.
 				if (auto const loc = declarationPosition(declaration); loc.has_value())
 				{
 					output.range = loc.value();
@@ -385,6 +464,7 @@ void LanguageServer::operator()(lsp::protocol::DefinitionParams const& _params)
 			}
 			else if (auto const n = dynamic_cast<frontend::MemberAccess const*>(sourceNode); n)
 			{
+				// For scope members, jump to the naming symbol of the referencing declaration of this member.
 				auto const declaration = n->annotation().referencedDeclaration;
 
 				if (auto const loc = declarationPosition(declaration); loc.has_value())
@@ -393,6 +473,22 @@ void LanguageServer::operator()(lsp::protocol::DefinitionParams const& _params)
 					auto const fullSourceName = m_fileReader->fullPathMapping().at(sourceName);
 					output.range = loc.value();
 					output.uri = "file://" + fullSourceName;
+					reply(_params.requestId, output);
+				}
+				else
+					error(_params.requestId, lsp::protocol::ErrorCode::InvalidParams, "Declaration not found.");
+			}
+			else if (auto const sourceIdentifier = dynamic_cast<Identifier const*>(sourceNode); sourceIdentifier != nullptr)
+			{
+				// For identifiers, jump to the naming symbol of the definition of this identifier.
+				auto const declaration = !sourceIdentifier->annotation().candidateDeclarations.empty()
+					? sourceIdentifier->annotation().candidateDeclarations.front()
+					: sourceIdentifier->annotation().referencedDeclaration;
+
+				if (auto const loc = declarationPosition(declaration); loc.has_value())
+				{
+					output.range = loc.value();
+					output.uri = "file://" + declaration->location().source->name();
 					reply(_params.requestId, output);
 				}
 				else
@@ -418,7 +514,7 @@ optional<lsp::Range> LanguageServer::declarationPosition(frontend::Declaration c
 	if (!_declaration)
 		return nullopt;
 
-	auto const location = _declaration->location();
+	auto const location = _declaration->nameLocation();
 
 	auto const [startLine, startColumn] = location.source->translatePositionToLineColumn(location.start);
 	auto const [endLine, endColumn] = location.source->translatePositionToLineColumn(location.end);
@@ -428,80 +524,6 @@ optional<lsp::Range> LanguageServer::declarationPosition(frontend::Declaration c
 		lsp::Position{endLine, endColumn}
 	};
 }
-
-// TOOD: maybe use SimpleASTVisitor here, if that would be a simple free-fuunction :)
-class ReferenceCollector: public frontend::ASTConstVisitor
-{
-private:
-	frontend::Declaration const& m_declaration;
-	std::vector<lsp::protocol::DocumentHighlight> m_result;
-
-public:
-	explicit ReferenceCollector(frontend::Declaration const& _declaration):
-		m_declaration{_declaration}
-	{
-		fprintf(stderr, "finding refs: %s\n", _declaration.name().c_str());
-	}
-
-	std::vector<lsp::protocol::DocumentHighlight> take() { return std::move(m_result); }
-
-	bool visit(FunctionDefinition const& _node) override
-	{
-		if (&_node == &m_declaration)
-			addReference(_node.location());
-
-		return visitNode(_node);
-	}
-
-	bool visit(VariableDeclaration const& _node) override
-	{
-		if (&_node == &m_declaration)
-			addReference(_node.location());
-
-		return visitNode(_node);
-	}
-
-	bool visit(Identifier const& _identifier) override
-	{
-		if (auto const declaration = _identifier.annotation().referencedDeclaration; declaration)
-			if (declaration == &m_declaration)
-				addReference(_identifier.location());
-
-		return visitNode(_identifier);
-	}
-
-	void addReference(SourceLocation const& _location)
-	{
-		auto const [startLine, startColumn] = _location.source->translatePositionToLineColumn(_location.start);
-		auto const [endLine, endColumn] = _location.source->translatePositionToLineColumn(_location.end);
-		auto const locationRange = lsp::Range{
-			lsp::Position{startLine, startColumn},
-			lsp::Position{endLine, endColumn}
-		};
-
-		fprintf(stderr, " -> found reference at %d:%d .. %d:%d\n",
-			startLine, startColumn,
-			endLine, endColumn
-		);
-
-		auto highlight = lsp::protocol::DocumentHighlight{};
-		highlight.range = locationRange;
-		highlight.kind = lsp::protocol::DocumentHighlightKind::Text; // TODO: are you being read or written to?
-
-		m_result.emplace_back(highlight);
-	}
-
-	// TODO: MemberAccess
-	// TODO: function declarations?
-
-	bool visitNode(ASTNode const& _node) override
-	{
-		if (&_node == &m_declaration)
-			addReference(_node.location());
-
-		return true;
-	}
-};
 
 std::vector<lsp::protocol::DocumentHighlight> LanguageServer::findAllReferences(frontend::Declaration const* _declaration, SourceUnit const& _sourceUnit)
 {
@@ -527,7 +549,9 @@ void LanguageServer::operator()(lsp::protocol::ReferenceParams const& _params)
 
 	if (auto const file = m_vfs.find(_params.textDocument.uri); file != nullptr)
 	{
-		compile(*file);
+		if (!m_compilerStack)
+			compile(*file);
+
 		solAssert(m_compilerStack.get() != nullptr, "");
 
 		auto const sourceName = file->uri().substr(7); // strip "file://"
