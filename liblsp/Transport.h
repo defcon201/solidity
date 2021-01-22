@@ -1,8 +1,5 @@
 #pragma once
 
-#include <liblsp/protocol.h>
-#include <liblsp/InputHandler.h>
-#include <liblsp/OutputGenerator.h>
 #include <liblsp/Logger.h>
 
 #include <json/value.h>
@@ -12,8 +9,33 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <variant>
 
 namespace lsp {
+
+// NOTE: https://microsoft.github.io/language-server-protocol/specifications/specification-3-14/
+//
+// This file contains the high level definitions of the underlying transport protocol.
+// It is not meant to include all but only what is necessary for solls.
+using MessageId = std::variant<int, std::string>;
+
+enum class ErrorCode
+{
+	// Defined by JSON RPC
+	ParseError = -32700,
+	InvalidRequest = -32600,
+	MethodNotFound = -32601,
+	InvalidParams = -32602,
+	InternalError = -32603,
+	serverErrorStart = -32099,
+	serverErrorEnd = -32000,
+	ServerNotInitialized = -32002,
+	UnknownErrorCode = -32001,
+
+	// Defined by the protocol.
+	RequestCancelled = -32800,
+	ContentModified = -32801,
+};
 
 /// Transport layer API
 ///
@@ -38,7 +60,7 @@ public:
 	virtual void reply(MessageId const& _id, Json::Value const& _result) = 0;
 
 	/// Sends an error reply with regards to the given request ID.
-	virtual void error(MessageId const& _id, protocol::ErrorCode _code, std::string const& _message) = 0;
+	virtual void error(MessageId const& _id, ErrorCode _code, std::string const& _message) = 0;
 };
 
 /// Standard JSON-RPC stream transport over standard iostream.
@@ -56,7 +78,7 @@ public:
 	std::optional<Json::Value> receive() override;
 	void notify(std::string const& _method, Json::Value const& _params) override;
 	void reply(MessageId const& _id, Json::Value const& _result) override;
-	void error(MessageId const& _id, protocol::ErrorCode _code, std::string const& _message) override;
+	void error(MessageId const& _id, ErrorCode _code, std::string const& _message) override;
 
 protected:
 	using HeaderMap = std::unordered_map<std::string, std::string>;

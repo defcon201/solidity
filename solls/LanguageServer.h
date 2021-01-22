@@ -51,7 +51,6 @@ class LanguageServer final: public lsp::Server
 {
 public:
 	using Logger = std::function<void(std::string_view)>;
-	using PublishDiagnosticsList = std::vector<lsp::protocol::PublishDiagnosticsParams>;
 
 	/// @param _logger special logger used for debugging the LSP.
 	explicit LanguageServer(lsp::Transport& _client, Logger _logger);
@@ -59,23 +58,22 @@ public:
 	std::vector<boost::filesystem::path>& allowedDirectories() noexcept { return m_allowedDirectories; }
 
 	// Client-to-Server messages
-	void operator()(lsp::protocol::CancelRequest const&) override;
-	void operator()(lsp::protocol::DidChangeTextDocumentParams const&) override;
-	void operator()(lsp::protocol::DidCloseTextDocumentParams const&) override;
-	void operator()(lsp::protocol::DidOpenTextDocumentParams const&) override;
-	void operator()(lsp::protocol::InitializeRequest const&) override;
-	void operator()(lsp::protocol::InitializedNotification const&) override;
-	void operator()(lsp::protocol::ShutdownParams const&) override;
-	void operator()(lsp::protocol::DefinitionParams const&) override;
-	void operator()(lsp::protocol::DocumentHighlightParams const&) override;
-	void operator()(lsp::protocol::ReferenceParams const&) override;
-	// TODO more to come :-)
+	InitializeResponse initialize(std::string _rootUri, std::map<std::string, std::string> _settings, Trace _trace, std::vector<WorkspaceFolder> _workspaceFolders) override;
+	void initialized() override;
+	void shutdown() override;
+	void documentOpened(std::string const& _uri, std::string _languageId, int _documentVersion, std::string _contents) override;
+	void documentContentUpdated(std::string const& _uri, std::optional<int> _documentVersion, std::string const& _fullContentChange) override;
+	void documentContentUpdated(std::string const& _uri, std::optional<int> _documentVersion, std::vector<DocumentChange> _changes) override;
+	void documentClosed(std::string const& _uri) override;
+	std::optional<Location> gotoDefinition(DocumentPosition _position) override;
+	std::vector<DocumentHighlight> semanticHighlight(DocumentPosition _documentPosition) override;
+	std::vector<Location> references(DocumentPosition _documentPosition) override;
 
 	/// performs a validation run.
 	///
 	/// update diagnostics and also pushes any updates to the client.
 	void validateAll();
-	void validate(lsp::vfs::File const& _file, PublishDiagnosticsList& _result);
+	void validate(lsp::vfs::File const& _file, std::vector<PublishDiagnostics>& _result);
 	void validate(lsp::vfs::File const& _file);
 
 private:
@@ -87,7 +85,7 @@ private:
 
 	std::optional<lsp::Range> declarationPosition(frontend::Declaration const* _declaration);
 
-	std::vector<lsp::protocol::DocumentHighlight> findAllReferences(
+	std::vector<DocumentHighlight> findAllReferences(
 		frontend::Declaration const* _declaration,
 		frontend::SourceUnit const& _sourceUnit
 	);
@@ -104,7 +102,7 @@ private:
 	std::map<std::string, std::string> m_sourceCodes;
 
 	/// Mapping between VFS file and its diagnostics.
-	std::map<std::string /*URI*/, PublishDiagnosticsList> m_diagnostics;
+	std::map<std::string /*URI*/, std::vector<PublishDiagnostics>> m_diagnostics;
 
 	std::unique_ptr<frontend::CompilerStack> m_compilerStack;
 

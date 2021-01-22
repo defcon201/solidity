@@ -1,11 +1,5 @@
 add_library(lsp
-    InputHandler.cpp
-    InputHandler.h
     Logger.h
-    MessageParser.cpp
-    MessageParser.h
-    OutputGenerator.cpp
-    OutputGenerator.h
     README.md
     Range.h
     Server.cpp

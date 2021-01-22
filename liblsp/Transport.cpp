@@ -1,5 +1,4 @@
 #include <liblsp/Transport.h>
-#include <liblsp/MessageParser.h>
 
 #include <libsolutil/JSON.h>
 #include <libsolutil/Visitor.h>
@@ -70,7 +69,7 @@ void JSONTransport::reply(MessageId const& _id, Json::Value const& _message)
 	send(json);
 }
 
-void JSONTransport::error(MessageId const& _id, protocol::ErrorCode _code, string const& _message)
+void JSONTransport::error(MessageId const& _id, ErrorCode _code, string const& _message)
 {
 	Json::Value json;
 	json["jsonrpc"] = "2.0";

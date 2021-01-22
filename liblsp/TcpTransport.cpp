@@ -68,7 +68,7 @@ void TcpTransport::reply(MessageId const& _id, Json::Value const& _result)
 		m_jsonTransport.value().reply(_id, _result);
 }
 
-void TcpTransport::error(MessageId const& _id, protocol::ErrorCode _code, std::string const& _message)
+void TcpTransport::error(MessageId const& _id, ErrorCode _code, std::string const& _message)
 {
 	if (m_jsonTransport.has_value())
 		m_jsonTransport.value().error(_id, _code, _message);

@@ -1,6 +1,5 @@
 #pragma once
 
-#include <liblsp/protocol.h>
 #include <string>
 
 namespace lsp {
@@ -16,14 +15,21 @@ class Logger
 public:
 	virtual ~Logger() = default;
 
-	virtual void log(protocol::MessageType _type, std::string const& _message) = 0;
+	enum class MessageType {
+		Error = 1,
+		Warning = 2,
+		Info = 3,
+		Log = 4,
+	};
+
+	virtual void log(MessageType _type, std::string const& _message) = 0;
 
 	// Convenience helper methods for logging in various severities.
 	//
-	void logError(std::string const& _msg) { log(protocol::MessageType::Error, _msg); }
-	void logWarning(std::string const& _msg) { log(protocol::MessageType::Warning, _msg); }
-	void logInfo(std::string const& _msg) { log(protocol::MessageType::Info, _msg); }
-	void logMessage(std::string const& _msg) { log(protocol::MessageType::Log, _msg); }
+	void logError(std::string const& _msg) { log(MessageType::Error, _msg); }
+	void logWarning(std::string const& _msg) { log(MessageType::Warning, _msg); }
+	void logInfo(std::string const& _msg) { log(MessageType::Info, _msg); }
+	void logMessage(std::string const& _msg) { log(MessageType::Log, _msg); }
 };
 
 } // end namespace

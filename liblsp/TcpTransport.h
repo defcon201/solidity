@@ -16,7 +16,7 @@ public:
 	std::optional<Json::Value> receive() override;
 	void notify(std::string const& _method, Json::Value const& _params) override;
 	void reply(MessageId const& _id, Json::Value const& _result) override;
-	void error(MessageId const& _id, protocol::ErrorCode _code, std::string const& _message) override;
+	void error(MessageId const& _id, ErrorCode _code, std::string const& _message) override;
 
 private:
 	boost::asio::io_service m_io_service;

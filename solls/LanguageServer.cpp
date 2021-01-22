@@ -15,11 +15,7 @@
 	along with solidity.  If not, see <http://www.gnu.org/licenses/>.
 */
 // SPDX-License-Identifier: GPL-3.0
-#include <boost/algorithm/string/predicate.hpp>
 #include <solls/LanguageServer.h>
-
-#include <liblsp/OutputGenerator.h>
-#include <liblsp/protocol.h>
 
 #include <libsolidity/ast/AST.h>
 #include <libsolidity/ast/ASTVisitor.h>
@@ -31,6 +27,7 @@
 #include <libsolutil/JSON.h>
 
 #include <boost/filesystem.hpp>
+#include <boost/algorithm/string/predicate.hpp>
 
 #include <ostream>
 
@@ -78,7 +75,7 @@ class ReferenceCollector: public frontend::ASTConstVisitor
 {
 private:
 	frontend::Declaration const& m_declaration;
-	std::vector<lsp::protocol::DocumentHighlight> m_result;
+	std::vector<lsp::Server::DocumentHighlight> m_result;
 
 public:
 	explicit ReferenceCollector(frontend::Declaration const& _declaration):
@@ -89,7 +86,7 @@ public:
 				_declaration.location().text().c_str());
 	}
 
-	std::vector<lsp::protocol::DocumentHighlight> take() { return std::move(m_result); }
+	std::vector<lsp::Server::DocumentHighlight> take() { return std::move(m_result); }
 
 	bool visit(Identifier const& _identifier) override
 	{
@@ -115,9 +112,9 @@ public:
 			endLine, endColumn
 		);
 
-		auto highlight = lsp::protocol::DocumentHighlight{};
+		auto highlight = lsp::Server::DocumentHighlight{};
 		highlight.range = locationRange;
-		highlight.kind = lsp::protocol::DocumentHighlightKind::Text; // TODO: are you being read or written to?
+		highlight.kind = lsp::Server::DocumentHighlightKind::Text; // TODO: are you being read or written to?
 
 		m_result.emplace_back(highlight);
 	}
@@ -146,35 +143,31 @@ LanguageServer::LanguageServer(lsp::Transport& _client, Logger _logger):
 {
 }
 
-void LanguageServer::operator()(lsp::protocol::CancelRequest const& _args)
-{
-	auto const id = visit(util::GenericVisitor{
-		[](string const& _id) -> string { return _id; },
-		[](int _id) -> string { return to_string(_id); }
-	}, _args.id);
-
-	logInfo("LanguageServer: Request " + id + " cancelled.");
-}
-
-void LanguageServer::operator()(lsp::protocol::ShutdownParams const&)
+void LanguageServer::shutdown()
 {
 	logInfo("LanguageServer: shutdown requested");
 }
 
-void LanguageServer::operator()(lsp::protocol::InitializeRequest const& _args)
+LanguageServer::InitializeResponse LanguageServer::initialize(
+	string _rootUri,
+	map<string, string> _settings,
+	Trace _trace,
+	vector<WorkspaceFolder> _workspaceFolders
+)
 {
+	(void) _trace; // TODO: debuglog based on this config
+	(void) _settings; // TODO: user settings (such as EVM version)
+
 #if !defined(NDEBUG)
 	ostringstream msg;
-	msg << "LanguageServer: Initializing, PID :" << _args.processId.value_or(-1) << endl;
-	msg << "                rootUri           : " << _args.rootUri.value_or("NULL") << endl;
-	msg << "                rootPath          : " << _args.rootPath.value_or("NULL") << endl;
-	for (auto const& workspace: _args.workspaceFolders)
+	msg << "LanguageServer: rootUri : " << _rootUri << endl;
+	for (auto const& workspace: _workspaceFolders)
 		msg << "                workspace folder: " << workspace.name << "; " << workspace.uri << endl;
 #endif
 
-	if (boost::starts_with(_args.rootUri.value_or(""), "file:///"))
+	if (boost::starts_with(_rootUri, "file:///"))
 	{
-		auto const fspath = boost::filesystem::path(_args.rootUri.value().substr(7));
+		auto const fspath = boost::filesystem::path(_rootUri.substr(7));
 		m_basePath = fspath;
 		m_allowedDirectories.push_back(fspath);
 	}
@@ -183,70 +176,79 @@ void LanguageServer::operator()(lsp::protocol::InitializeRequest const& _args)
 	logMessage(msg.str());
 #endif
 
-	lsp::protocol::InitializeResult result;
-	result.requestId = _args.requestId;
-	result.capabilities.hoverProvider = true;
-	result.capabilities.textDocumentSync.openClose = true;
-	result.capabilities.textDocumentSync.change = lsp::protocol::TextDocumentSyncKind::Incremental;
-	result.capabilities.definitionProvider = true; // go-to-definition feature
-
-	reply(_args.requestId, result);
+	InitializeResponse hello{};
+	hello.serverName = "solc";
+	hello.serverVersion = "0.0.0"; // TODO: solidity version macro here
+	hello.supportsDefinition = true;
+	hello.supportsDocumentHighlight = true;
+	hello.supportsDocumentSync = true;
+	hello.supportsReferences = true;
+	hello.supportsHover = false; // TODO
+	return hello;
 }
 
-void LanguageServer::operator()(lsp::protocol::InitializedNotification const&)
+void LanguageServer::initialized()
 {
 	// NB: this means the client has finished initializing. Now we could maybe start sending
 	// events to the client.
 	logMessage("LanguageServer: Client initialized");
 }
 
-void LanguageServer::operator()(lsp::protocol::DidOpenTextDocumentParams const& _args)
+void LanguageServer::documentOpened(string const& _uri, string _languageId, int _documentVersion, std::string _contents)
 {
-	logMessage("LanguageServer: Opening document: " + _args.textDocument.uri);
+	logMessage("LanguageServer: Opening document: " + _uri);
 
 	lsp::vfs::File const& file = m_vfs.insert(
-		_args.textDocument.uri,
-		_args.textDocument.languageId,
-		_args.textDocument.version,
-		_args.textDocument.text
+		_uri,
+		_languageId,
+		_documentVersion,
+		_contents
 	);
 
 	validate(file);
 }
 
-void LanguageServer::operator()(lsp::protocol::DidChangeTextDocumentParams const& _didChange)
+void LanguageServer::documentContentUpdated(string const& _uri, optional<int> _version, vector<DocumentChange> _changes)
 {
-	if (lsp::vfs::File* file = m_vfs.find(_didChange.textDocument.uri); file != nullptr)
+	if (lsp::vfs::File* file = m_vfs.find(_uri); file != nullptr)
 	{
-		if (_didChange.textDocument.version.has_value())
-			file->setVersion(_didChange.textDocument.version.value());
+		if (_version.has_value())
+			file->setVersion(_version.value());
 
-		for (lsp::protocol::TextDocumentContentChangeEvent const& contentChange: _didChange.contentChanges)
+		for (DocumentChange const& change: _changes)
 		{
-			visit(util::GenericVisitor{
-				[&](lsp::protocol::TextDocumentRangedContentChangeEvent const& change) {
 #if !defined(NDEBUG)
-					ostringstream str;
-					str << "did change: " << change.range << " for '" << change.text << "'";
-					logMessage(str.str());
+			ostringstream str;
+			str << "did change: " << change.range << " for '" << change.text << "'";
+			logMessage(str.str());
 #endif
-					file->modify(change.range, change.text);
-				},
-				[&](lsp::protocol::TextDocumentFullContentChangeEvent const& change) {
-					file->replace(change.text);
-				}
-			}, contentChange);
+			file->modify(change.range, change.text);
 		}
 
 		validate(*file);
 	}
 	else
-		logError("LanguageServer: File to be modified not opened \"" + _didChange.textDocument.uri + "\"");
+		logError("LanguageServer: File to be modified not opened \"" + _uri + "\"");
 }
 
-void LanguageServer::operator()(lsp::protocol::DidCloseTextDocumentParams const& _didClose)
+void LanguageServer::documentContentUpdated(string const& _uri, optional<int> _version, string const& _fullContentChange)
 {
-	logMessage("LanguageServer: didClose: " + _didClose.textDocument.uri);
+	if (lsp::vfs::File* file = m_vfs.find(_uri); file != nullptr)
+	{
+		if (_version.has_value())
+			file->setVersion(_version.value());
+
+		file->replace(_fullContentChange);
+
+		validate(*file);
+	}
+	else
+		logError("LanguageServer: File to be modified not opened \"" + _uri + "\"");
+}
+
+void LanguageServer::documentClosed(string const& _uri)
+{
+	logMessage("LanguageServer: didClose: " + _uri);
 }
 
 void LanguageServer::validateAll()
@@ -257,11 +259,11 @@ void LanguageServer::validateAll()
 
 void LanguageServer::validate(lsp::vfs::File const& _file)
 {
-	PublishDiagnosticsList result;
+	vector<PublishDiagnostics> result;
 	validate(_file, result);
 
-	for (lsp::protocol::PublishDiagnosticsParams const& diag: result)
-		notify(diag);
+	for (auto const& diag: result)
+		pushDiagnostics(diag);
 }
 
 frontend::ReadCallback::Result LanguageServer::readFile(string const& _kind, string const& _path)
@@ -269,7 +271,7 @@ frontend::ReadCallback::Result LanguageServer::readFile(string const& _kind, str
 	return m_fileReader->readFile(_kind, _path);
 }
 
-constexpr lsp::protocol::DiagnosticSeverity toDiagnosticSeverity(Error::Type _errorType)
+constexpr lsp::Server::DiagnosticSeverity toDiagnosticSeverity(Error::Type _errorType)
 {
 	switch (_errorType)
 	{
@@ -279,12 +281,12 @@ constexpr lsp::protocol::DiagnosticSeverity toDiagnosticSeverity(Error::Type _er
 		case Error::Type::ParserError:
 		case Error::Type::SyntaxError:
 		case Error::Type::TypeError:
-			return lsp::protocol::DiagnosticSeverity::Error;
+			return lsp::Server::DiagnosticSeverity::Error;
 		case Error::Type::Warning:
-			return lsp::protocol::DiagnosticSeverity::Warning;
+			return lsp::Server::DiagnosticSeverity::Warning;
 	}
 	// Should never be reached.
-	return lsp::protocol::DiagnosticSeverity::Error;
+	return lsp::Server::DiagnosticSeverity::Error;
 }
 
 void LanguageServer::compile(lsp::vfs::File const& _file)
@@ -312,11 +314,11 @@ void LanguageServer::compile(lsp::vfs::File const& _file)
 	m_compilerStack->compile();
 }
 
-void LanguageServer::validate(lsp::vfs::File const& _file, PublishDiagnosticsList& _result)
+void LanguageServer::validate(lsp::vfs::File const& _file, vector<PublishDiagnostics>& _result)
 {
 	compile(_file);
 
-	lsp::protocol::PublishDiagnosticsParams params{};
+	PublishDiagnostics params{};
 	params.uri = _file.uri();
 
 	for (shared_ptr<Error const> const& error: m_compilerStack->errors())
@@ -341,7 +343,7 @@ void LanguageServer::validate(lsp::vfs::File const& _file, PublishDiagnosticsLis
 			max(message.primary.endColumn, 0)
 		}};
 
-		lsp::protocol::Diagnostic diag{};
+		Diagnostic diag{};
 		diag.range.start.line = startPosition.line;
 		diag.range.start.column = startPosition.column;
 		diag.range.end.line = endPosition.line;
@@ -352,7 +354,7 @@ void LanguageServer::validate(lsp::vfs::File const& _file, PublishDiagnosticsLis
 
 		for (SourceReference const& secondary: message.secondary)
 		{
-			auto related = lsp::protocol::DiagnosticRelatedInformation{};
+			auto related = DiagnosticRelatedInformation{};
 
 			related.message = secondary.message;
 			related.location.uri = "file://" + secondary.sourceName; // is the sourceName always a fully qualified path?
@@ -365,7 +367,7 @@ void LanguageServer::validate(lsp::vfs::File const& _file, PublishDiagnosticsLis
 		}
 
 		if (message.errorId.has_value())
-			diag.code = to_string(message.errorId.value().error);
+			diag.code = message.errorId.value().error;
 
 		params.diagnostics.emplace_back(move(diag));
 	}
@@ -374,22 +376,22 @@ void LanguageServer::validate(lsp::vfs::File const& _file, PublishDiagnosticsLis
 #if 1
 	for (size_t pos = _file.contentString().find("FIXME", 0); pos != string::npos; pos = _file.contentString().find("FIXME", pos + 1))
 	{
-		lsp::protocol::Diagnostic diag{};
+		Diagnostic diag{};
 		diag.message = "Hello, FIXME's should be fixed.";
 		diag.range.start = _file.buffer().toPosition(pos);
 		diag.range.end = {diag.range.start.line, diag.range.start.column + 5};
-		diag.severity = lsp::protocol::DiagnosticSeverity::Error;
+		diag.severity = DiagnosticSeverity::Error;
 		diag.source = "solc";
 		params.diagnostics.emplace_back(diag);
 	}
 
 	for (size_t pos = _file.contentString().find("TODO", 0); pos != string::npos; pos = _file.contentString().find("FIXME", pos + 1))
 	{
-		lsp::protocol::Diagnostic diag{};
+		Diagnostic diag{};
 		diag.message = "Please remember to create a ticket on GitHub for that.";
 		diag.range.start = _file.buffer().toPosition(pos);
 		diag.range.end = {diag.range.start.line, diag.range.start.column + 5};
-		diag.severity = lsp::protocol::DiagnosticSeverity::Hint;
+		diag.severity = DiagnosticSeverity::Hint;
 		diag.source = "solc";
 		params.diagnostics.emplace_back(diag);
 	}
@@ -425,18 +427,16 @@ frontend::ASTNode const* LanguageServer::findASTNode(lsp::Position const& _posit
 	return closestMatch;
 }
 
-void LanguageServer::operator()(lsp::protocol::DefinitionParams const& _params)
+optional<LanguageServer::Location> LanguageServer::gotoDefinition(DocumentPosition _location)
 {
-	lsp::protocol::DefinitionReplyParams output{};
-
-	if (auto const file = m_vfs.find(_params.textDocument.uri); file != nullptr)
+	if (auto const file = m_vfs.find(_location.uri); file != nullptr)
 	{
 		compile(*file);
 		solAssert(m_compilerStack.get() != nullptr, "");
 
 		auto const sourceName = file->uri().substr(7); // strip "file://"
 
-		if (auto const sourceNode = findASTNode(_params.position, sourceName); sourceNode)
+		if (auto const sourceNode = findASTNode(_location.position, sourceName); sourceNode)
 		{
 			if (auto const importDirective = dynamic_cast<ImportDirective const*>(sourceNode))
 			{
@@ -444,23 +444,25 @@ void LanguageServer::operator()(lsp::protocol::DefinitionParams const& _params)
 				// is being imported.
 				if (auto const fpm = m_fileReader->fullPathMapping().find(importDirective->path()); fpm != m_fileReader->fullPathMapping().end())
 				{
+					Location output{};
 					output.uri = "file://" + fpm->second;
-					reply(_params.requestId, output);
+					return {output};
 				}
 				else
-					error(_params.requestId, lsp::protocol::ErrorCode::InvalidParams, "Declaration not found.");
+					return nullopt; // definition not found
 			}
 			else if (auto const declaration = dynamic_cast<Declaration const*>(sourceNode))
 			{
 				// For any kind of declaration, jump to the referencing symbol of that declaration.
 				if (auto const loc = declarationPosition(declaration); loc.has_value())
 				{
+					Location output{};
 					output.range = loc.value();
 					output.uri = "file://" + declaration->location().source->name();
-					reply(_params.requestId, output);
+					return output;
 				}
 				else
-					error(_params.requestId, lsp::protocol::ErrorCode::InvalidParams, "Declaration not found.");
+					return nullopt; // definition not found
 			}
 			else if (auto const n = dynamic_cast<frontend::MemberAccess const*>(sourceNode); n)
 			{
@@ -471,12 +473,13 @@ void LanguageServer::operator()(lsp::protocol::DefinitionParams const& _params)
 				{
 					auto const sourceName = declaration->location().source->name();
 					auto const fullSourceName = m_fileReader->fullPathMapping().at(sourceName);
+					Location output{};
 					output.range = loc.value();
 					output.uri = "file://" + fullSourceName;
-					reply(_params.requestId, output);
+					return output;
 				}
 				else
-					error(_params.requestId, lsp::protocol::ErrorCode::InvalidParams, "Declaration not found.");
+					return nullopt; // definition not found
 			}
 			else if (auto const sourceIdentifier = dynamic_cast<Identifier const*>(sourceNode); sourceIdentifier != nullptr)
 			{
@@ -487,26 +490,32 @@ void LanguageServer::operator()(lsp::protocol::DefinitionParams const& _params)
 
 				if (auto const loc = declarationPosition(declaration); loc.has_value())
 				{
+					Location output{};
 					output.range = loc.value();
 					output.uri = "file://" + declaration->location().source->name();
-					reply(_params.requestId, output);
+					return output;
 				}
 				else
-					error(_params.requestId, lsp::protocol::ErrorCode::InvalidParams, "Declaration not found.");
+					return nullopt; // definition not found
 			}
 			else
 			{
 				fprintf(stderr, "identifier: %s\n", typeid(*sourceIdentifier).name());
-				error(_params.requestId, lsp::protocol::ErrorCode::InvalidParams, "Symbol is not an identifier.");
+				// LOG: error(_params.requestId, ErrorCode::InvalidParams, "Symbol is not an identifier.");
+				return nullopt;
 			}
 		}
 		else
 		{
-			error(_params.requestId, lsp::protocol::ErrorCode::InvalidParams, "Symbol not found.");
+			// error(_params.requestId, ErrorCode::InvalidParams, "Symbol not found.");
+			return nullopt;
 		}
 	}
 	else
-		error(_params.requestId, lsp::protocol::ErrorCode::InvalidRequest, "File not found in VFS.");
+	{
+		// error(_params.requestId, ErrorCode::InvalidRequest, "File not found in VFS.");
+		return nullopt;
+	}
 }
 
 optional<lsp::Range> LanguageServer::declarationPosition(frontend::Declaration const* _declaration)
@@ -525,7 +534,7 @@ optional<lsp::Range> LanguageServer::declarationPosition(frontend::Declaration c
 	};
 }
 
-std::vector<lsp::protocol::DocumentHighlight> LanguageServer::findAllReferences(frontend::Declaration const* _declaration, SourceUnit const& _sourceUnit)
+std::vector<LanguageServer::DocumentHighlight> LanguageServer::findAllReferences(frontend::Declaration const* _declaration, SourceUnit const& _sourceUnit)
 {
 	if (_declaration)
 	{
@@ -539,15 +548,15 @@ std::vector<lsp::protocol::DocumentHighlight> LanguageServer::findAllReferences(
 	return {};
 }
 
-void LanguageServer::operator()(lsp::protocol::ReferenceParams const& _params)
+vector<LanguageServer::Location> LanguageServer::references(DocumentPosition _documentPosition)
 {
 	fprintf(stderr, "find all references: %s:%d:%d\n",
-		_params.textDocument.uri.c_str(),
-		_params.position.line,
-		_params.position.column
+		_documentPosition.uri.c_str(),
+		_documentPosition.position.line,
+		_documentPosition.position.column
 	);
 
-	if (auto const file = m_vfs.find(_params.textDocument.uri); file != nullptr)
+	if (auto const file = m_vfs.find(_documentPosition.uri); file != nullptr)
 	{
 		if (!m_compilerStack)
 			compile(*file);
@@ -556,113 +565,115 @@ void LanguageServer::operator()(lsp::protocol::ReferenceParams const& _params)
 
 		auto const sourceName = file->uri().substr(7); // strip "file://"
 
-		if (auto const sourceNode = findASTNode(_params.position, sourceName); sourceNode)
+		if (auto const sourceNode = findASTNode(_documentPosition.position, sourceName); sourceNode)
 		{
-			auto output = lsp::protocol::ReferenceReplyParams{};
+			auto output = vector<Location>{};
 			if (auto const sourceIdentifier = dynamic_cast<Identifier const*>(sourceNode); sourceIdentifier != nullptr)
 			{
 				auto const declaration = !sourceIdentifier->annotation().candidateDeclarations.empty()
 					? sourceIdentifier->annotation().candidateDeclarations.front()
 					: sourceIdentifier->annotation().referencedDeclaration;
 
-				auto const sourceName = _params.textDocument.uri.substr(7); // strip "file://"
+				auto const sourceName = _documentPosition.uri.substr(7); // strip "file://"
 				frontend::SourceUnit const& sourceUnit = m_compilerStack->ast(sourceName);
-				std::vector<lsp::protocol::DocumentHighlight> highlights = findAllReferences(declaration, sourceUnit);
-				for (auto const& highlight: highlights)
+				for (auto const& highlight: findAllReferences(declaration, sourceUnit))
 				{
-					auto location = lsp::protocol::Location{};
+					auto location = Location{};
 					location.range = highlight.range;
-					location.uri = _params.textDocument.uri;
-					output.locations.emplace_back(location);
+					location.uri = _documentPosition.uri;
+					output.emplace_back(location);
 				}
 			}
 			else if (auto const varDecl = dynamic_cast<VariableDeclaration const*>(sourceNode); varDecl != nullptr)
 			{
 				fprintf(stderr, "AST node is vardecl\n");
-				auto const sourceName = _params.textDocument.uri.substr(7); // strip "file://"
+				auto const sourceName = _documentPosition.uri.substr(7); // strip "file://"
 				frontend::SourceUnit const& sourceUnit = m_compilerStack->ast(sourceName);
 				auto const highlights = findAllReferences(varDecl, sourceUnit);
 				for (auto const& highlight: highlights)
 				{
-					auto location = lsp::protocol::Location{};
+					auto location = Location{};
 					location.range = highlight.range;
-					location.uri = _params.textDocument.uri;
-					output.locations.emplace_back(location);
+					location.uri = _documentPosition.uri;
+					output.emplace_back(location);
 				}
 			}
 			else
 			{
 				fprintf(stderr, "not an identifier\n");
 			}
-			reply(_params.requestId, output);
+			return output;
 		}
 		else
 		{
 			fprintf(stderr, "AST node not found\n");
-			error(_params.requestId, lsp::protocol::ErrorCode::InvalidParams, "Symbol not found.");
+			// error(_params.requestId, ErrorCode::InvalidParams, "Symbol not found.");
+			return {};
 		}
 	}
 	else
 	{
 		// reply(_params.requestId, output);
-		error(_params.requestId, lsp::protocol::ErrorCode::RequestCancelled, "not implemented yet.");
+		// error(_params.requestId, ErrorCode::RequestCancelled, "not implemented yet.");
+		return {};
 	}
 	fflush(stderr);
 }
 
-void LanguageServer::operator()(lsp::protocol::DocumentHighlightParams const& _params)
+vector<LanguageServer::DocumentHighlight> LanguageServer::semanticHighlight(DocumentPosition _documentPosition)
 {
 	fprintf(stderr, "DocumentHighlightParams: %s:%d:%d\n",
-		_params.textDocument.uri.c_str(),
-		_params.position.line,
-		_params.position.column
+		_documentPosition.uri.c_str(),
+		_documentPosition.position.line,
+		_documentPosition.position.column
 	);
 
-	if (auto const file = m_vfs.find(_params.textDocument.uri); file != nullptr)
+	if (auto const file = m_vfs.find(_documentPosition.uri); file != nullptr)
 	{
 		compile(*file);
 		solAssert(m_compilerStack.get() != nullptr, "");
 
 		auto const sourceName = file->uri().substr(7); // strip "file://"
 
-		if (auto const sourceNode = findASTNode(_params.position, sourceName); sourceNode)
+		if (auto const sourceNode = findASTNode(_documentPosition.position, sourceName); sourceNode)
 		{
-			auto output = lsp::protocol::DocumentHighlightReplyParams{};
+			auto output = vector<DocumentHighlight>{};
 			if (auto const sourceIdentifier = dynamic_cast<Identifier const*>(sourceNode); sourceIdentifier != nullptr)
 			{
 				auto const declaration = !sourceIdentifier->annotation().candidateDeclarations.empty()
 					? sourceIdentifier->annotation().candidateDeclarations.front()
 					: sourceIdentifier->annotation().referencedDeclaration;
 
-				auto const sourceName = _params.textDocument.uri.substr(7); // strip "file://"
+				auto const sourceName = _documentPosition.uri.substr(7); // strip "file://"
 				frontend::SourceUnit const& sourceUnit = m_compilerStack->ast(sourceName);
-				output.highlights = findAllReferences(declaration, sourceUnit);
+				output = findAllReferences(declaration, sourceUnit);
 			}
 			else if (auto const varDecl = dynamic_cast<VariableDeclaration const*>(sourceNode); varDecl != nullptr)
 			{
 				fprintf(stderr, "AST node is vardecl\n");
-				auto const sourceName = _params.textDocument.uri.substr(7); // strip "file://"
+				auto const sourceName = _documentPosition.uri.substr(7); // strip "file://"
 				frontend::SourceUnit const& sourceUnit = m_compilerStack->ast(sourceName);
-				output.highlights = findAllReferences(varDecl, sourceUnit);
+				output = findAllReferences(varDecl, sourceUnit);
 			}
 			else
 			{
 				fprintf(stderr, "not an identifier\n");
 			}
-			reply(_params.requestId, output);
+			return output;
 		}
 		else
 		{
 			fprintf(stderr, "AST node not found\n");
-			error(_params.requestId, lsp::protocol::ErrorCode::InvalidParams, "Symbol not found.");
+			// error(_documentPosition.requestId, ErrorCode::InvalidParams, "Symbol not found.");
+			return {};
 		}
 	}
 	else
 	{
 		// reply(_params.requestId, output);
-		error(_params.requestId, lsp::protocol::ErrorCode::RequestCancelled, "not implemented yet.");
+		// error(_documentPosition.requestId, ErrorCode::RequestCancelled, "not implemented yet.");
+		return {};
 	}
-	fflush(stderr);
 }
 
 } // namespace solidity
